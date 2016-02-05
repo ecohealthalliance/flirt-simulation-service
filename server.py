@@ -1,16 +1,19 @@
 import logging
 import os.path
-import uuid
+import hashlib
 import json
 import collections
 import motor
+import pymongo
 import tornado.web
 import tornado.ioloop
 import tornado.httpserver
 from tornado.options import define, options
+from tornado import gen
 from bson import json_util
 from cerberus import Validator
 from datetime import datetime
+from simulator import tasks
 
 define('port', default=45000, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
@@ -39,7 +42,7 @@ class SimulationRecord():
         """ the cerberus schema definition used for validation """
         return {
             # _id will be assigned by mongo
-            'simId': {'type': 'string', 'required': True},
+            'simId': { 'type': 'string', 'required': True},
             'departureNode': { 'type': 'string', 'required': True},
             'numberPassengers': { 'type': 'integer', 'required': True},
             'startDate': { 'type': 'datetime', 'required': True},
@@ -50,6 +53,18 @@ class SimulationRecord():
     def __init__(self):
         self.fields = {} #collections.OrderedDict()
         self.validator = Validator(self.schema)
+
+    def gen_key(self):
+        """ generate a unique key for this record """
+        h = hashlib.md5()
+        try:
+            h.update(self.fields['departureNode'])
+            h.update(str(self.fields['numberPassengers']))
+            h.update(str(self.fields['startDate']))
+            h.update(str(self.fields['endDate']))
+            return h.hexdigest()
+        except:
+            return None
 
     def is_valid(self):
         return self.validator.validate(self.fields)
@@ -87,7 +102,7 @@ class SimulationRecord():
 
         # default values
         self.fields['submittedTime'] = datetime.utcnow()
-        self.fields['simId'] = str(uuid.uuid4())
+        self.fields['simId'] = self.gen_key()
 
     def validation_errors(self):
         errors = self.validator.errors
@@ -167,6 +182,46 @@ class SimulationRecord():
 class SimulationHandler(BaseHandler):
     @tornado.web.asynchronous
     def post(self):
+        def _queue_simulation():
+            # get parameters for the job
+            sim_id = self.simulationRecord.fields['simId']
+            departure_node = self.simulationRecord.fields['departureNode']
+            num_passengers = self.simulationRecord.fields['numberPassengers']
+            start = str(self.simulationRecord.fields['startDate'])
+            end = str(self.simulationRecord.fields['endDate'])
+            # send the job to the queue
+            res = tasks.simulate_passengers.delay(sim_id, departure_node, num_passengers, start, end)
+            return res.id
+
+        def _on_insert(message, error):
+            if error:
+                logging.error('error: %r', error)
+                self.write({
+                    'error': True,
+                    'message': 'database error'
+                })
+                self.finish()
+                return
+
+            self.write({'simId': self.simulationRecord.fields['simId']})
+            self.finish()
+
+        def _on_find(message, error):
+            if error:
+                logging.error('error: %r', error)
+                self.write({
+                    'error': True,
+                    'message': 'database error'
+                })
+                self.finish()
+                return
+            if message:
+                self.write({'simId': message['simId']})
+                self.finish()
+            else:
+                self.simulationRecord.fields['taskId'] = _queue_simulation()
+                self.db.simulations.insert(self.simulationRecord.fields, callback=_on_insert)
+
         self.simulationRecord = SimulationRecord()
         self.simulationRecord.create(self)
         if not self.simulationRecord.is_valid():
@@ -178,21 +233,8 @@ class SimulationHandler(BaseHandler):
             self.finish()
             return
 
-        # valid record, start the job and insert record into mongo
-
-        self.db.simulations.insert(self.simulationRecord.fields, callback=_on_response)
-
-        def _on_response(message, error):
-            if error:
-                logging.error('error: %r', error)
-                self.write({
-                    'error': True,
-                    'message': 'database error'
-                })
-                self.finish()
-                return
-            self.write({'simId': self.simulationRecord.fields['simId']})
-            self.finish()
+        self.db.simulations.find_one({'simId': self.simulationRecord.fields['simId']}, callback=_on_find)
+        return
 
 class Application(tornado.web.Application):
     def __init__(self):
@@ -210,6 +252,10 @@ class Application(tornado.web.Application):
         # Mongo connection
         client = motor.motor_tornado.MotorClient(options.mongo_host, options.mongo_port)
         self.db = client[options.mongo_database]
+        # ensure index on simId
+        self.db.simulations.create_index([
+            ("simId", pymongo.ASCENDING)
+        ], unique=True, name="idxSimulations_simId")
 
         super(Application, self).__init__(handlers, **settings)
 
