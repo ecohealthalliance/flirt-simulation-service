@@ -10,5 +10,5 @@ downloads
 eggs
 parts
 src/*.egg-info
-flirt-simulation-service-env
+env/
 data/*
