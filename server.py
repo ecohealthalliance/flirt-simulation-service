@@ -3,7 +3,7 @@ import os.path
 import uuid
 import json
 import collections
-import asyncmongo
+import motor
 import tornado.web
 import tornado.ioloop
 import tornado.httpserver
@@ -32,7 +32,7 @@ class SimulationRecord():
     @property
     def post_parameters(self):
         """ list of items that are expected via post"""
-        return ['departureNode', 'numberPassengers', 'startDate', 'endDate']
+        return ['departureNode', 'numberPassengers', 'startDate', 'endDate', 'submittedBy']
 
     @property
     def schema(self):
@@ -46,7 +46,7 @@ class SimulationRecord():
             'endDate': { 'type': 'datetime', 'required': True},
             'maxNumberLegs': {'type': 'integer', 'nullable': True, 'required': True},
             'maxLayoverTime': {'type': 'integer', 'nullable': True, 'required': True},
-            'submittedBy': {'type': 'string', 'nullable': True, 'required': True},
+            'submittedBy': {'type': 'string', 'regex': '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', 'required': True},
             'submittedTime': { 'type': 'datetime', 'required': True}}
 
     def __init__(self):
@@ -91,11 +91,14 @@ class SimulationRecord():
         self.fields['maxLayoverTime'] = 8
         self.fields['maxNumberLegs'] = 5
         self.fields['submittedTime'] = datetime.utcnow()
-        self.fields['submittedBy'] = 'robot@noreply'
         self.fields['simId'] = str(uuid.uuid4())
 
     def validation_errors(self):
         errors = self.validator.errors
+        for key, value in errors.iteritems():
+            # the standard error for a regex isn't human readable
+            if key == 'submittedBy':
+                errors[key] = 'value is not a valid e-mail address'
         return errors
 
     def to_json(self):
