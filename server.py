@@ -14,9 +14,9 @@ from datetime import datetime
 
 define('port', default=45000, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
-define('mongohost', default='localhost', help='mongo host name', type=str)
-define('mongoport', default=27017, help='mongo host name', type=int)
-define('mongodb', default='grits', help='mongo host name', type=str)
+define('mongo_host', default='localhost', help='mongo server hostname', type=str)
+define('mongo_port', default=27017, help='mongo server port number', type=int)
+define('mongo_database', default='grits', help='monog database name', type=str)
 
 class BaseHandler(tornado.web.RequestHandler):
     @property
@@ -44,8 +44,6 @@ class SimulationRecord():
             'numberPassengers': { 'type': 'integer', 'required': True},
             'startDate': { 'type': 'datetime', 'required': True},
             'endDate': { 'type': 'datetime', 'required': True},
-            'maxNumberLegs': {'type': 'integer', 'nullable': True, 'required': True},
-            'maxLayoverTime': {'type': 'integer', 'nullable': True, 'required': True},
             'submittedBy': {'type': 'string', 'regex': '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', 'required': True},
             'submittedTime': { 'type': 'datetime', 'required': True}}
 
@@ -88,8 +86,6 @@ class SimulationRecord():
                 continue
 
         # default values
-        self.fields['maxLayoverTime'] = 8
-        self.fields['maxNumberLegs'] = 5
         self.fields['submittedTime'] = datetime.utcnow()
         self.fields['simId'] = str(uuid.uuid4())
 
@@ -183,19 +179,20 @@ class SimulationHandler(BaseHandler):
             return
 
         # valid record, start the job and insert record into mongo
-        self.db.simulations.insert(self.simulationRecord.fields, callback=self._on_response)
 
-    def _on_response(self, message, error):
-        if error:
-            logging.info('error: %r', error)
-            self.write({
-                'error': True,
-                'message': 'database error'
-            })
+        self.db.simulations.insert(self.simulationRecord.fields, callback=_on_response)
+
+        def _on_response(message, error):
+            if error:
+                logging.error('error: %r', error)
+                self.write({
+                    'error': True,
+                    'message': 'database error'
+                })
+                self.finish()
+                return
+            self.write({'simId': self.simulationRecord.fields['simId']})
             self.finish()
-            return
-        self.write({'simId': self.simulationRecord.fields['simId']})
-        self.finish()
 
 class Application(tornado.web.Application):
     def __init__(self):
@@ -210,9 +207,9 @@ class Application(tornado.web.Application):
             debug=options.debug,
         )
 
-        # Have one global connection to mongo DB across all handlers
-        client = motor.motor_tornado.MotorClient(options.mongohost, options.mongoport)
-        self.db = client[options.mongodb]
+        # Mongo connection
+        client = motor.motor_tornado.MotorClient(options.mongo_host, options.mongo_port)
+        self.db = client[options.mongo_database]
 
         super(Application, self).__init__(handlers, **settings)
 
