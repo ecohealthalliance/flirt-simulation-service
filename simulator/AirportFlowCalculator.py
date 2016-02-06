@@ -285,7 +285,9 @@ class AirportFlowCalculator(object):
             if store_itins_with_id:
                 itin = {
                     "origin": itinerary[0]['_id'],
+                    "originLoc:": itinerary[0]['loc']['coordinates'],
                     "destination": itinerary[-1]['_id'],
+                    "destinationLoc:": itinerary[-1]['loc']['coordinates'],
                     "simulationId": store_itins_with_id
                 }
                 if include_stops_in_itin:
