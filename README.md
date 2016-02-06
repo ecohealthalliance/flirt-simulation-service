@@ -1,6 +1,6 @@
 # flirt-simulation-service
 
-This microservice provides a web service for creating a `flight_network_heatmap`
+This microservice provides an interface for creating a `flight_network_heatmap`
 simulation. Before starting the service, one should create a
 [virtual environment](http://docs.python-guide.org/en/latest/dev/virtualenvs/)
 within the cloned repository and install the requirements.
