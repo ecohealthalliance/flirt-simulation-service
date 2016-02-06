@@ -14,7 +14,7 @@ within the cloned repository and install the requirements.
 
 ## Tornado web service
 
-To web service uses the [Tornado](http://tornadoweb.org). The server may be
+To web service uses [Tornado](http://tornadoweb.org). The server may be
 started with the default option with the following command:
 
 ```
