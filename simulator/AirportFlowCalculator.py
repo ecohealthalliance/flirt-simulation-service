@@ -234,14 +234,11 @@ class AirportFlowCalculator(object):
                         filtered_probs.append(prob)
                 flights = filtered_flights
                 layover_probs = filtered_probs
+            departure_airport_obj = self.db.airports.find_one({'_id': departure_airport})
             if len(flights) == 0:
                 # There are no flights, so we assume the passenger leaves
-                # the airport, unless it is the starting airport,
-                # in which case the passenger is lost.
-                if starting_airport != departure_airport:
-                    return [self.db.airports.find_one({'_id': departure_airport})]
-                else:
-                    return [None]
+                # the airport.
+                return [departure_airport_obj]
             inflow_sofar = 0.0
             for idx, flight in enumerate(flights):
                 # An airport's inflow is the number of passengers from the 
@@ -261,20 +258,19 @@ class AirportFlowCalculator(object):
                 random_number = random.random()
                 if legs_sofar < self.max_legs and random_number <= outflow:
                     # Find airports that could be arrived at through transfers.
-                    return [self.db.airports.find_one({'_id': departure_airport})] + simulate_passenger(
+                    return [departure_airport_obj] + simulate_passenger(
                         flight['arrivalAirport']['_id'],
                         departure_airport_arrival_time=flight['arrival_datetime'],
                         legs_sofar=legs_sofar + 1)
                 elif random_number > (1.0 - terminal_flow):
-                    return [self.db.airports.find_one({'_id': departure_airport}), flight['arrivalAirport']]
+                    return [departure_airport_obj, flight['arrivalAirport']]
                 else:
                     inflow_sofar += inflow
-            # If we reach this point the passenger is lost.
-            # This occurs mainly due to the max_legs cutoff.
-            # It may also occur due to floating point error.
-            return [None]
+            # The function might not return in the for loop above due to the
+            # max_legs cutoff or floating point error.
+            # In this case we assume the passenger stops at the departure airport.
+            return [departure_airport_obj]
         airports = {}
-        lost_passengers = 0
         for i in range(simulated_passengers):
             random_start_time = start_date + datetime.timedelta(
                 seconds=random.randint(0, round((end_date - start_date).total_seconds())))
@@ -294,13 +290,9 @@ class AirportFlowCalculator(object):
                     itin["stops"] = [airport["_id"] for airport in itinerary]
                 self.db.simulated_itineraries.insert(itin)
             terminal_airport = itinerary[-1]
-            if not terminal_airport:
-                lost_passengers += 1
-                continue
             terminal_airport = dict(terminal_airport,
                 terminal_flow=1.0/simulated_passengers)
             extend_airport_flows(airports, { terminal_airport['_id'] : terminal_airport })
-        self.error = float(lost_passengers) / simulated_passengers
         return airports
 if __name__ == '__main__':
     import argparse

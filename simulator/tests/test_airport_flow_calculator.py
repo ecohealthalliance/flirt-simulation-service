@@ -10,7 +10,7 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
     @classmethod
     def setUpClass(self):
         self.db = pymongo.MongoClient("localhost")["grits"]
-        self.db.simulated_itineraries.delete_many({"simulationId": "test"})
+        self.db.simulated_itineraries.remove({"simulationId": "test"}, multi=True)
         self.calculator = AirportFlowCalculator(self.db)
         self.probs = {
             k: v.get('terminal_flow', 0.0)
@@ -59,10 +59,11 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
             }
           }
         ])
-        for result in results:
+        for result in results['result']:
             legs = result['_id'] - 1
             leg_prob = float(result['total']) / self.SIMULATED_PASSENGERS
-            print leg_prob
+            # due to things like airports with no outgoing flights, there
+            # may be some significant deviation from the distribution.
             prob_diff = self.calculator.LEG_PROBABILITY_DISTRIBUTION[legs] - leg_prob
-            self.assertTrue(abs(prob_diff) <= 0.02, "probability of " + str(legs) +
-                " legs differs by more than 2% from expected distribution. Difference: " + str(prob_diff))
+            self.assertTrue(abs(prob_diff) <= 0.03, "probability of " + str(legs) +
+                " legs differs by more than 3 from expected distribution. Difference: " + str(prob_diff))
