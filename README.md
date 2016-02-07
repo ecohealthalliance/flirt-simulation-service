@@ -6,7 +6,8 @@ simulation. Before starting the service, one should create a
 within the cloned repository and install the requirements.
 
 ```
-  git clone git@github.com:ecohealthalliance/flirt-simulation-service.git ```
+  git clone git@github.com:ecohealthalliance/flirt-simulation-service.git
+  cd flirt-simulation-service
   virtualenv env
   source env/bin/activate
   pip install -r requirements.txt
