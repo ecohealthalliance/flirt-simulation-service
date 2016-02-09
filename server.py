@@ -17,7 +17,7 @@ from simulator import tasks
 
 define('port', default=45000, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
-define('mongo_host', default='localhost', help='mongo server hostname', type=str)
+define('mongo_host', default='10.0.0.175', help='mongo server hostname', type=str)
 define('mongo_port', default=27017, help='mongo server port number', type=int)
 define('mongo_database', default='grits', help='monog database name', type=str)
 
