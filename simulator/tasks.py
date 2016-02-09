@@ -23,7 +23,7 @@ celery_tasks.conf.update(
     }
 )
 
-db = pymongo.MongoClient(config.mongo_uri)['grits']
+db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
 
 my_airport_flow_calculator = AirportFlowCalculator(db)
 
