@@ -4,11 +4,12 @@ import pymongo
 import datetime
 from AirportFlowCalculator import AirportFlowCalculator
 from dateutil import parser as dateparser
+import config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BROKER_URL = 'mongodb://localhost:27017/tasks'
+BROKER_URL = config.mongo_uri + '/tasks'
 
 celery_tasks = celery.Celery('tasks', broker=BROKER_URL)
 celery_tasks.conf.update(
@@ -22,7 +23,7 @@ celery_tasks.conf.update(
     }
 )
 
-db = pymongo.MongoClient('localhost')['grits']
+db = pymongo.MongoClient(config.mongo_uri)['grits']
 
 my_airport_flow_calculator = AirportFlowCalculator(db)
 
