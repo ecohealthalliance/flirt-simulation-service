@@ -261,6 +261,10 @@ class Application(tornado.web.Application):
 
 def main():
     tornado.options.parse_command_line()
+    logging.info('port: %r', options.port)
+    logging.info('mongo_host: %r', options.mongo_host)
+    logging.info('mongo_port: %r', options.mongo_port)
+    logging.info('mongo_database: %r', options.mongo_database)
     http_server = tornado.httpserver.HTTPServer(Application())
     http_server.listen(options.port)
     tornado.ioloop.IOLoop.current().start()
