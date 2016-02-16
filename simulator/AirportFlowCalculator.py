@@ -15,6 +15,25 @@ import math
 import random
 from pylru import lrudecorator
 
+# Memoization speeds up the simulation but its use is limited by memory consumption.
+# Using slotted objects reduces the size of the flights stored in memeory
+# allowing more of them to be cached.
+class LightweightFlight(object):
+    _slots__ = [
+        'arrival_coordinates',
+        'departure_coordinates',
+        'total_seats',
+        'departure_datetime',
+        'arrival_datetime',
+        'arrival_airport']
+    def __init__(self, flight_dict, departure_datetime, arrival_datetime):
+        self.arrival_coordinates = flight_dict['arrivalAirport']['loc']['coordinates']
+        self.departure_coordinates = flight_dict['departureAirport']['loc']['coordinates']
+        self.total_seats = flight_dict['totalSeats']
+        self.departure_datetime = departure_datetime
+        self.arrival_datetime = arrival_datetime
+        self.arrival_airport = flight_dict['arrivalAirport']
+
 class AirportFlowCalculator(object):
     # Assumption: We will assume that the probability distribution for the
     # number of legs in a jouney is homogenous across point of origin and
@@ -53,7 +72,6 @@ class AirportFlowCalculator(object):
                     for n in range(1, leg_num)])))
             for leg_num, leg_prob in self.LEG_PROBABILITY_DISTRIBUTION.items()}
         self.max_legs = len(self.LEG_PROBABILITY_DISTRIBUTION) - 1
-    @lrudecorator(1000)
     def get_flights_from_airport(self, airport, date):
         """
         Retrieve all the flight that that happened up to 2 days after the given
@@ -64,7 +82,7 @@ class AirportFlowCalculator(object):
         * This function is memoized to redues the number of database queries
           needed.
         """
-        query = self.db.legs.find({
+        query_results = self.db.legs.find({
             "departureAirport._id": airport,
             "totalSeats": { "$gt" : 0 },
             "effectiveDate": { "$lte" : date },
@@ -77,13 +95,11 @@ class AirportFlowCalculator(object):
             "arrivalAirport.loc.coordinates":1,
             "arrivalAirport._id":1,
             "departureAirport.loc.coordinates":1,
-            "departureAirport._id":1,
             "totalSeats":1,
             "effectiveDate":1, "discontinuedDate": 1})
-        results = list(query)
         flights = []
         days_of_the_week = "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday".split(",")
-        for result in results:
+        for result in query_results:
             # we don't need to worry about weekends being interpreted as being
             # in the past because setting the default date on the dateparser
             # ensures that weekdays are interpreted as being during or after
@@ -106,7 +122,7 @@ class AirportFlowCalculator(object):
                     # range because with the day of week factored in, it is
                     # possible to end up outside of it.
                     if departure_datetime >= result["effectiveDate"] and departure_datetime <= result["discontinuedDate"]:
-                        flights.append(dict(result,
+                        flights.append(LightweightFlight(result,
                             departure_datetime=departure_datetime,
                             arrival_datetime=arrival_datetime))
         # print "Results:", len(results)
@@ -127,7 +143,7 @@ class AirportFlowCalculator(object):
         starting_airport_dict = self.db.airports.find_one({'_id': starting_airport})
         if not starting_airport_dict:
             return {}
-        @lrudecorator(1000)
+        @lrudecorator(400)
         def get_filtered_flights_from_airport(airport, date):
             flights = self.get_flights_from_airport(airport, date)
             # Assumption: People are unlikely to fly a long distance,
@@ -148,9 +164,9 @@ class AirportFlowCalculator(object):
             flights = [
                 flight for flight in flights if (
                     distance(starting_airport_dict['loc']['coordinates'],
-                        flight['arrivalAirport']['loc']['coordinates']) >=
-                    distance(flight['departureAirport']['loc']['coordinates'],
-                        flight['arrivalAirport']['loc']['coordinates']))]
+                        flight.arrival_coordinates) >=
+                    distance(flight.departure_coordinates,
+                        flight.arrival_coordinates))]
             # print "Filtered Flights:", len(flights)
             return flights
         def layover_pmf(hours):
@@ -192,7 +208,7 @@ class AirportFlowCalculator(object):
             # only include flights that the passenger arrived prior to
             flights = [
                 flight for flight in flights
-                if departure_airport_arrival_time < flight['departure_datetime']]
+                if departure_airport_arrival_time < flight.departure_datetime]
             # Weight flights from the origin city (A1) based on the summed
             # weekly flow between A and all other destinations (B1).
             # Specifically, sum the number of seats on each flight between
@@ -204,7 +220,7 @@ class AirportFlowCalculator(object):
             # there is nowhere for the passengers we expect to transfer
             # to go.
             cumulative_outbound_seats = sum([
-                flight['totalSeats'] for flight in flights])
+                flight.total_seats for flight in flights])
             # Assumption: People are likely to take flights that occur shortly
             # after they arrived at an airport. This may differ for, say,
             # flights crossing an administrative boundary, but at first pass,
@@ -219,11 +235,11 @@ class AirportFlowCalculator(object):
             if self.weight_by_departure_time:
                 layover_probs = [
                     layover_pmf(
-                        float((flight['departure_datetime'] -
+                        float((flight.departure_datetime -
                         departure_airport_arrival_time).total_seconds()) / 3600)
                     for flight in flights]
                 time_weighted_cumulative_outbound_seats = sum([
-                    flight['totalSeats'] * prob
+                    flight.total_seats * prob
                     for flight, prob in zip(flights, layover_probs)])
                 # Filter out flights with a zero probability
                 filtered_flights = []
@@ -247,11 +263,11 @@ class AirportFlowCalculator(object):
                 # inflow from other flights which will be combined later.
                 if self.weight_by_departure_time:
                     inflow = (
-                        float(flight['totalSeats']) * layover_probs[idx] /
+                        float(flight.total_seats) * layover_probs[idx] /
                         time_weighted_cumulative_outbound_seats)
                 else:
                     inflow = (
-                        float(flight['totalSeats']) /
+                        float(flight.total_seats) /
                         cumulative_outbound_seats)
                 terminal_flow = inflow * self.TERMINAL_LEG_PROBABILITIES[legs_sofar + 1] / (1.0 - inflow_sofar)
                 outflow = inflow * (1.0 - self.TERMINAL_LEG_PROBABILITIES[legs_sofar + 1]) / (1.0 - inflow_sofar)
@@ -259,11 +275,11 @@ class AirportFlowCalculator(object):
                 if legs_sofar < self.max_legs and random_number <= outflow:
                     # Find airports that could be arrived at through transfers.
                     return [departure_airport_obj] + simulate_passenger(
-                        flight['arrivalAirport']['_id'],
-                        departure_airport_arrival_time=flight['arrival_datetime'],
+                        flight.arrival_airport['_id'],
+                        departure_airport_arrival_time=flight.arrival_datetime,
                         legs_sofar=legs_sofar + 1)
                 elif random_number > (1.0 - terminal_flow):
-                    return [departure_airport_obj, flight['arrivalAirport']]
+                    return [departure_airport_obj, flight.arrival_airport]
                 else:
                     inflow_sofar += inflow
             # The function might not return in the for loop above due to the
