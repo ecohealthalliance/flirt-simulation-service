@@ -37,8 +37,8 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
         self.assertEqual(self.probs.get("BNA", 0), 0)
     def test_airport_flows(self):
         # This test will fail if the flight data in the database changes.
-        print { str(k): round(v, 3) for k, v in self.probs.items() if v > 0.01 }
-        expected_probs = {'ATL': 0.05, 'FLL': 0.06, 'DEN': 0.06, 'DTW': 0.02, 'TPA': 0.03, 'DAL': 0.06, 'ECP': 0.05, 'BWI': 0.05, 'PIT': 0.05, 'MDW': 0.03, 'SAT': 0.06, 'IAH': 0.02, 'JAX': 0.04, 'IAD': 0.02, 'HOU': 0.03, 'EWR': 0.01, 'MCI': 0.05, 'PHL': 0.06, 'LGA': 0.02, 'YYZ': 0.01, 'ORD': 0.01, 'LAS': 0.03}
+        # print { str(k): round(v, 3) for k, v in self.probs.items() if v > 0.01 }
+        expected_probs = {'MSY': 0.015, 'ATL': 0.022, 'BOS': 0.017, 'FLL': 0.058, 'DEN': 0.05, 'DTW': 0.033, 'JAX': 0.028, 'DAL': 0.092, 'ECP': 0.035, 'BWI': 0.023, 'PIT': 0.038, 'MDW': 0.027, 'SAT': 0.066, 'IAH': 0.026, 'TPA': 0.023, 'HOU': 0.025, 'EWR': 0.026, 'MCO': 0.03, 'MCI': 0.036, 'PHL': 0.047, 'LGA': 0.027, 'ORD': 0.02, 'LAS': 0.02}
         for airport_id, prob in expected_probs.items():
             # Binomial distribution standard deviaion as a percentage
             standard_deviation = math.sqrt(self.SIMULATED_PASSENGERS * prob * (1 - prob)) / self.SIMULATED_PASSENGERS
