@@ -19,12 +19,17 @@ define('port', default=45000, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
 define('mongo_host', default='10.0.0.175', help='mongo server hostname', type=str)
 define('mongo_port', default=27017, help='mongo server port number', type=int)
-define('mongo_database', default='grits', help='monog database name', type=str)
+define('mongo_database', default='grits', help='mongo database name', type=str)
+define('node_collection', default='airports', help='mongo node collection name', type=str)
 
 class BaseHandler(tornado.web.RequestHandler):
     @property
     def db(self):
         return self.application.db
+
+    @property
+    def nodes(self):
+        return self.application.nodes
 
 class HomeHandler(BaseHandler):
     def get(self):
@@ -35,7 +40,7 @@ class SimulationRecord():
     @property
     def post_parameters(self):
         """ list of items that are expected via post"""
-        return ['departureNode', 'numberPassengers', 'startDate', 'endDate', 'submittedBy']
+        return ['departureNodes', 'numberPassengers', 'startDate', 'endDate', 'submittedBy']
 
     @property
     def schema(self):
@@ -43,14 +48,15 @@ class SimulationRecord():
         return {
             # _id will be assigned by mongo
             'simId': { 'type': 'string', 'required': True},
-            'departureNode': { 'type': 'string', 'required': True},
+            'departureNodes': { 'type': 'list', 'required': True, 'minlength': 1, 'allowed': self.nodes, 'schema': {'type': 'string'}},
             'numberPassengers': { 'type': 'integer', 'required': True},
             'startDate': { 'type': 'datetime', 'required': True},
             'endDate': { 'type': 'datetime', 'required': True},
             'submittedBy': {'type': 'string', 'regex': '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', 'required': True},
             'submittedTime': { 'type': 'datetime', 'required': True}}
 
-    def __init__(self):
+    def __init__(self, nodes):
+        self.nodes = nodes
         self.fields = {} #collections.OrderedDict()
         self.validator = Validator(self.schema)
 
@@ -58,7 +64,7 @@ class SimulationRecord():
         """ generate a unique key for this record """
         h = hashlib.md5()
         try:
-            h.update(self.fields['departureNode'])
+            h.update(str(self.fields['departureNodes']))
             h.update(str(self.fields['numberPassengers']))
             h.update(str(self.fields['startDate']))
             h.update(str(self.fields['endDate']))
@@ -77,6 +83,13 @@ class SimulationRecord():
                 continue
 
             data_type = self.schema[param]['type'].lower()
+
+            if data_type == 'list':
+                if SimulationRecord.could_be_list(raw_value):
+                    self.fields[param] = [x.strip() for x in raw_value.split(',')]
+                else:
+                    self.fields[param] = None
+                continue
 
             if data_type == 'string':
                 if SimulationRecord.is_empty_str(raw_value):
@@ -115,6 +128,24 @@ class SimulationRecord():
     def to_json(self):
         """ dumps the records fields into JSON format """
         return json.dumps(self.fields, default=json_util.default)
+
+    @staticmethod
+    def could_be_list(val):
+        """ determines if the val is an instance of list """
+        if val == None:
+            return False
+        if isinstance(val, list):
+            return True
+        if isinstance(val, str) or isinstance(val, unicode):
+            lst = [x.strip() for x in val.split(',')]
+            if isinstance(lst, list):
+                if len(lst) > 0:
+                    return True
+                else:
+                    return False
+            else:
+                return False
+        return False
 
     @staticmethod
     def could_be_int(val):
@@ -183,15 +214,22 @@ class SimulationHandler(BaseHandler):
     @tornado.web.asynchronous
     def post(self):
         def _queue_simulation():
-            # get parameters for the job
-            sim_id = self.simulationRecord.fields['simId']
-            departure_node = self.simulationRecord.fields['departureNode']
-            num_passengers = self.simulationRecord.fields['numberPassengers']
-            start = str(self.simulationRecord.fields['startDate'])
-            end = str(self.simulationRecord.fields['endDate'])
-            # send the job to the queue
-            res = tasks.simulate_passengers.delay(sim_id, departure_node, num_passengers, start, end)
-            return res.id
+            # get parameters for the job(s)
+            task_ids = []
+            num_departures = len(self.simulationRecord.fields['departureNodes'])
+            if num_departures == 0:
+                return
+            for node in self.simulationRecord.fields['departureNodes']:
+                departure_node = node
+                sim_id = self.simulationRecord.fields['simId']
+                num_passengers = self.simulationRecord.fields['numberPassengers']
+                start = str(self.simulationRecord.fields['startDate'])
+                end = str(self.simulationRecord.fields['endDate'])
+                # send the job to the queue
+                res = tasks.simulate_passengers.delay(sim_id, departure_node, num_passengers/num_departures, start, end)
+                task_ids.append(res.id)
+            logging.info('simId: %s, task_ids: %r', sim_id, task_ids)
+            return task_ids
 
         def _on_insert(message, error):
             if error:
@@ -219,10 +257,10 @@ class SimulationHandler(BaseHandler):
                 self.write({'simId': message['simId']})
                 self.finish()
             else:
-                self.simulationRecord.fields['taskId'] = _queue_simulation()
+                self.simulationRecord.fields['taskIds'] = _queue_simulation()
                 self.db.simulations.insert(self.simulationRecord.fields, callback=_on_insert)
 
-        self.simulationRecord = SimulationRecord()
+        self.simulationRecord = SimulationRecord(self.nodes)
         self.simulationRecord.create(self)
         if not self.simulationRecord.is_valid():
             self.write({
@@ -257,6 +295,15 @@ class Application(tornado.web.Application):
             ("simId", pymongo.ASCENDING)
         ], unique=True, name="idxSimulations_simId")
 
+        self.nodes = []
+        @gen.coroutine
+        def get_nodes():
+            cursor = self.db[options.node_collection].find({}, {'_id': 1})
+            while (yield cursor.fetch_next):
+                doc = cursor.next_object()
+                self.nodes.append(doc['_id'])
+        tornado.ioloop.IOLoop.current().run_sync(get_nodes)
+        logging.info('Ready to simulate [%s] nodes', len(self.nodes))
         super(Application, self).__init__(handlers, **settings)
 
 def main():
