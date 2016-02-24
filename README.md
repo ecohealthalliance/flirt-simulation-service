@@ -27,7 +27,7 @@ mongodb running on `localhost:27017` and the database `grits`.  One may change
 the default values by passing command line arguments.
 
 ```
-python server.py port 45000 mongo_host 127.0.0.1 mongo_port 27017 mongo_database grits
+python server.py --port 45000 --mongo_host 127.0.0.1 --mongo_port 27017 --mongo_database grits
 ```
 
 ## Celery queue
@@ -48,7 +48,7 @@ required:
 
 ```
 {
-  'departureNode': { 'type': 'string', 'required': True},
+  'departureNodes': { 'type': 'list', 'required': True, 'minlength': 1, 'allowed': self.nodes, 'schema': {'type': 'string'}},
   'numberPassengers': { 'type': 'integer', 'required': True},
   'startDate': { 'type': 'datetime', 'required': True},
   'endDate': { 'type': 'datetime', 'required': True},
