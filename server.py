@@ -14,12 +14,16 @@ from bson import json_util
 from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
+import pymongo
+import pandas as pd
+import cachetools
 
 define('port', default=45000, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
 define('mongo_host', default='10.0.0.175', help='mongo server hostname', type=str)
 define('mongo_port', default=27017, help='mongo server port number', type=int)
-define('mongo_database', default='grits', help='monog database name', type=str)
+define('mongo_database', default='grits', help='mongo database name', type=str)
+define('promed_db_name', default='promed', help='name of mongo database with promed records', type=str)
 
 class BaseHandler(tornado.web.RequestHandler):
     @property
@@ -236,11 +240,73 @@ class SimulationHandler(BaseHandler):
         self.db.simulations.find_one({'simId': self.simulationRecord.fields['simId']}, callback=_on_find)
         return
 
+@cachetools.func.ttl_cache(maxsize=1, ttl=60 * 60 * 24) # 24 hour ttl value
+def get_blindspot_data(db):
+    q = db.posts.aggregate([
+      { "$unwind" : "$articles" },
+      { "$unwind": "$articles.geoannotations" },
+      {
+        "$group" : {
+            "_id" : {
+                "$concat":[
+                    "$articles.geoannotations.country code",
+                    ";;",
+                    {"$substr": [{ "$year": "$promedDate" }, 0, 4]}
+                ]
+            },
+            "mentions" : { "$sum" : 1 }
+        }
+      }
+    ])
+    mention_data = pd.DataFrame([
+        dict(
+            CC=r['_id'].split(";;")[0],
+            year=r['_id'].split(";;")[1],
+            mentions=r['mentions'])
+        for r in q['result']])
+    # The country table comes from geonames.org
+    # It is used for population data.
+    country_table = pd.read_csv(
+        "country_table.tsv",
+        sep='\t',
+        # The NA ISO code for Namibia will be parsed as an NA value without this.
+        keep_default_na=False)
+    # Create a table with a row for every country-year combinaton
+    country_table = country_table[['ISO', 'Country', 'Area(in sq km)', 'Population']]
+    country_table['Population'] = country_table['Population'].convert_objects(convert_numeric=True)
+    year_table = pd.DataFrame(pd.unique(mention_data.year), columns=['year'])
+    year_table['empty'] = year_table.year.isnull()
+    country_table['empty'] = country_table.ISO.isnull()
+    country_year_table = year_table.merge(country_table, on='empty', how='inner')
+    result = country_year_table.merge(
+        mention_data,
+        left_on=["ISO", "year"],
+        right_on=["CC", "year"],
+        how='left')
+    result["mentions"] = result["mentions"].fillna(0)
+    result["mentions per capita"] = result["mentions"] / result["Population"]
+    return {
+        "result": result[[
+            "ISO",
+            "Country",
+            "Population",
+            "Area(in sq km)",
+            "mentions",
+            "mentions per capita",
+            "year"]].to_dict(orient="index").values()
+    }
+class BlindspotsHandler(BaseHandler):
+    def post(self):
+        print 1
+        self.write(get_blindspot_data(self.application.promed_db))
+        return self.finish()
+
 class Application(tornado.web.Application):
     def __init__(self):
         handlers = [
             (r"/", HomeHandler),
             (r"/simulator", SimulationHandler),
+            (r"/blindspots", BlindspotsHandler),
         ]
         settings = dict(
             version='0.0.1',
@@ -252,6 +318,7 @@ class Application(tornado.web.Application):
         # Mongo connection
         client = motor.motor_tornado.MotorClient(options.mongo_host, options.mongo_port)
         self.db = client[options.mongo_database]
+        self.promed_db = pymongo.MongoClient(options.mongo_host, options.mongo_port)[options.promed_db_name]
         # ensure index on simId
         self.db.simulations.create_index([
             ("simId", pymongo.ASCENDING)
