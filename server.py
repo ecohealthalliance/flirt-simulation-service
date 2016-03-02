@@ -1,4 +1,5 @@
 import logging
+import os
 import os.path
 import hashlib
 import json
@@ -15,11 +16,31 @@ from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
 
-define('port', default=45000, help='try running on a given port', type=int)
+if 'SIMULATION_PORT' in os.environ:
+        _port = int(os.environ['SIMULATION_PORT'])
+else:
+        _port=45000
+
+if 'MONGO_HOST' in os.environ:
+        _mongo_host = os.environ['MONGO_HOST']
+else:
+        _mongo_host='10.0.0.175'
+
+if 'MONGO_PORT' in os.environ:
+        _mongo_port = int(os.environ['MONGO_PORT'])
+else:
+        _mongo_port=27017
+
+if 'MONGO_DB' in os.environ:
+        _mongo_db = os.environ['MONGO_DB']
+else:
+        _mongo_db='grits'
+
+define('port', default=_port, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
-define('mongo_host', default='10.0.0.175', help='mongo server hostname', type=str)
-define('mongo_port', default=27017, help='mongo server port number', type=int)
-define('mongo_database', default='grits', help='mongo database name', type=str)
+define('mongo_host', default=_mongo_host, help='mongo server hostname', type=str)
+define('mongo_port', default=_mongo_port, help='mongo server port number', type=int)
+define('mongo_database', default=_mongo_db, help='mongo database name', type=str)
 define('node_collection', default='airports', help='mongo node collection name', type=str)
 
 class BaseHandler(tornado.web.RequestHandler):
