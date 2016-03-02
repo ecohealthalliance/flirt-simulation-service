@@ -1,2 +1,13 @@
-mongo_uri = "mongodb://10.0.0.175:27017"
-mongo_db_name = "grits-net-meteor"
+import os
+
+if 'MONGO_URI' in os.environ:
+        mongo_uri = os.environ['MONGO_URI']
+else:
+        mongo_uri="mongodb://10.0.0.175:27017"
+
+
+if 'MONGO_DB' in os.environ:
+        mongo_db_name = os.environ['MONGO_DB']
+else:
+        mongo_db_name="grits-net-meteor"
+ 
