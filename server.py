@@ -16,6 +16,8 @@ from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
 
+__VERSION__ = '0.0.1'
+
 if 'SIMULATION_PORT' in os.environ:
         _port = int(os.environ['SIMULATION_PORT'])
 else:
@@ -24,7 +26,7 @@ else:
 if 'MONGO_HOST' in os.environ:
         _mongo_host = os.environ['MONGO_HOST']
 else:
-        _mongo_host='10.0.0.175'
+        _mongo_host='localhost'
 
 if 'MONGO_PORT' in os.environ:
         _mongo_port = int(os.environ['MONGO_PORT'])
@@ -89,6 +91,7 @@ class SimulationRecord():
             h.update(str(self.fields['numberPassengers']))
             h.update(str(self.fields['startDate']))
             h.update(str(self.fields['endDate']))
+            h.update(str(__VERSION__))
             return h.hexdigest()
         except:
             return None
@@ -234,20 +237,52 @@ class SimulationRecord():
 class SimulationHandler(BaseHandler):
     @tornado.web.asynchronous
     def post(self):
+        outgoing_seat_counts = {}
+        @gen.coroutine
+        def get_outgoing_seat_counts():
+            cursor = self.db.flights.aggregate([
+                {
+                    '$match' : {
+                        'departureAirport._id' : {
+                            '$in' : self.simulationRecord.fields['departureNodes']
+                        },
+                        'effectiveDate': {
+                            "$lte" : self.simulationRecord.fields['endDate']
+                        },
+                        'discontinuedDate': {
+                            "$gte" : self.simulationRecord.fields['startDate']
+                        }
+                    }
+                }, {
+                    '$group' : {
+                        '_id' : '$departureAirport._id',
+                        'totalSeats' : {
+                            '$sum' : '$totalSeats'
+                        }
+                    }
+                }
+            ])
+            while (yield cursor.fetch_next):
+                doc = cursor.next_object()
+                outgoing_seat_counts[doc['_id']] = doc['totalSeats']
         def _queue_simulation():
             # get parameters for the job(s)
             task_ids = []
+            total_seat_count = sum(outgoing_seat_counts.values())
             num_departures = len(self.simulationRecord.fields['departureNodes'])
             if num_departures == 0:
                 return
+            if outgoing_seat_counts == 0:
+                return
+            num_passengers = self.simulationRecord.fields['numberPassengers']
             for node in self.simulationRecord.fields['departureNodes']:
+                node_passengers = int(round(float(num_passengers * outgoing_seat_counts.get(node, 0)) / total_seat_count))
                 departure_node = node
                 sim_id = self.simulationRecord.fields['simId']
-                num_passengers = self.simulationRecord.fields['numberPassengers']
                 start = str(self.simulationRecord.fields['startDate'])
                 end = str(self.simulationRecord.fields['endDate'])
                 # send the job to the queue
-                res = tasks.simulate_passengers.delay(sim_id, departure_node, num_passengers/num_departures, start, end)
+                res = tasks.simulate_passengers.delay(sim_id, departure_node, node_passengers, start, end)
                 task_ids.append(res.id)
             logging.info('simId: %s, task_ids: %r', sim_id, task_ids)
             return task_ids
@@ -278,9 +313,10 @@ class SimulationHandler(BaseHandler):
                 self.write({'simId': message['simId']})
                 self.finish()
             else:
-                self.simulationRecord.fields['taskIds'] = _queue_simulation()
-                self.db.simulations.insert(self.simulationRecord.fields, callback=_on_insert)
-
+                def _seat_counts_gotten(future):
+                    self.simulationRecord.fields['taskIds'] = _queue_simulation()
+                    self.db.simulations.insert(self.simulationRecord.fields, callback=_on_insert)
+                tornado.ioloop.IOLoop.instance().add_future(get_outgoing_seat_counts(), callback=_seat_counts_gotten)
         self.simulationRecord = SimulationRecord(self.nodes)
         self.simulationRecord.create(self)
         if not self.simulationRecord.is_valid():
@@ -311,6 +347,7 @@ class Application(tornado.web.Application):
         # Mongo connection
         client = motor.motor_tornado.MotorClient(options.mongo_host, options.mongo_port)
         self.db = client[options.mongo_database]
+
         # ensure index on simId
         self.db.simulations.create_index([
             ("simId", pymongo.ASCENDING)
