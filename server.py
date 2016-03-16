@@ -16,7 +16,7 @@ from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
 
-__VERSION__ = '0.0.1'
+__VERSION__ = '0.0.2'
 
 if 'SIMULATION_PORT' in os.environ:
         _port = int(os.environ['SIMULATION_PORT'])
