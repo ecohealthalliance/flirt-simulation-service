@@ -54,3 +54,15 @@ required:
   'submittedBy': {'type': 'string', 'regex': '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', 'required': True},
 }
 ```
+
+## Testing with curl
+
+```
+curl -X POST -d departureNodes=SEA,LAX -d numberPassengers=100 -d startDate=1/1/2016 -d endDate=1/2/2016 -d submittedBy=a@b.c localhost:45000/simulator
+```
+
+The api only returns a simulation id. To see the full results, a command like this can be used:
+
+```
+mongo localhost:27017/grits --eval 'JSON.stringify(db.simulated_itineraries.find({"simulationId": return value from curl post}).limit(10).toArray(),0,2)'
+```

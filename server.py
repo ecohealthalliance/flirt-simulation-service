@@ -237,10 +237,10 @@ class SimulationRecord():
 class SimulationHandler(BaseHandler):
     @tornado.web.asynchronous
     def post(self):
+        print "Simulation request received"
         outgoing_seat_counts = {}
-        @gen.coroutine
-        def get_outgoing_seat_counts():
-            cursor = self.db.flights.aggregate([
+        def get_outgoing_seat_counts(callback):
+            cursor = self.db.legs.aggregate([
                 {
                     '$match' : {
                         'departureAirport._id' : {
@@ -254,35 +254,81 @@ class SimulationHandler(BaseHandler):
                         }
                     }
                 }, {
+                    '$project' : {
+                        'departureAirport._id' : 1,
+                        'totalSeats' : 1,
+                        'weeklyFrequency' : 1,
+                        'weeklyRepeats': {
+                            '$divide' : [
+                                {
+                                    '$subtract': [
+                                        # cond is used in place of min/max for older
+                                        # versions of mongo.
+                                        { '$cond' : [
+                                            { '$lt' : [
+                                                self.simulationRecord.fields['endDate'],
+                                                '$discontinuedDate'
+                                            ]},
+                                            self.simulationRecord.fields['endDate'],
+                                            '$discontinuedDate'
+                                            ] },
+                                        { '$cond' : [
+                                            { '$gt' : [
+                                                self.simulationRecord.fields['startDate'],
+                                                '$effectiveDate'
+                                            ]},
+                                            self.simulationRecord.fields['startDate'],
+                                            '$effectiveDate'
+                                            ] }
+                                    ]
+                                },
+                                # one week in milliseconds
+                                7 * 24 * 60 * 60 * 1000
+                            ]
+                        }
+                    }
+                }, {
                     '$group' : {
                         '_id' : '$departureAirport._id',
+                        # This is an aproximation because only the fraction of
+                        # days the flight runs on in the start/end weeks is
+                        # computed rather than counting how many days the flight
+                        # is schedule on that occur before/afer the day of the
+                        # week that the flight starts/ends on.
                         'totalSeats' : {
-                            '$sum' : '$totalSeats'
+                            '$sum' : { '$multiply' : ['$totalSeats', '$weeklyFrequency', '$weeklyRepeats'] }
                         }
                     }
                 }
             ])
-            while (yield cursor.fetch_next):
-                doc = cursor.next_object()
-                outgoing_seat_counts[doc['_id']] = doc['totalSeats']
+            def _aggregation_complete(docs, err):
+                if err:
+                    print "Error:", err
+                    raise err
+                for doc in docs:
+                    outgoing_seat_counts[doc['_id']] = doc['totalSeats']
+                callback()
+            cursor.to_list(None, callback=_aggregation_complete)
+
         def _queue_simulation():
             # get parameters for the job(s)
             task_ids = []
+            print "outgoing_seat_counts", outgoing_seat_counts
             total_seat_count = sum(outgoing_seat_counts.values())
             num_departures = len(self.simulationRecord.fields['departureNodes'])
             if num_departures == 0:
                 return
-            if outgoing_seat_counts == 0:
+            if total_seat_count == 0:
+                print "No seats for the given airports:", self.simulationRecord.fields['departureNodes']
                 return
             num_passengers = self.simulationRecord.fields['numberPassengers']
+            sim_id = self.simulationRecord.fields['simId']
+            start = str(self.simulationRecord.fields['startDate'])
+            end = str(self.simulationRecord.fields['endDate'])
             for node in self.simulationRecord.fields['departureNodes']:
                 node_passengers = int(round(float(num_passengers * outgoing_seat_counts.get(node, 0)) / total_seat_count))
-                departure_node = node
-                sim_id = self.simulationRecord.fields['simId']
-                start = str(self.simulationRecord.fields['startDate'])
-                end = str(self.simulationRecord.fields['endDate'])
                 # send the job to the queue
-                res = tasks.simulate_passengers.delay(sim_id, departure_node, node_passengers, start, end)
+                res = tasks.simulate_passengers.delay(sim_id, node, node_passengers, start, end)
                 task_ids.append(res.id)
             logging.info('simId: %s, task_ids: %r', sim_id, task_ids)
             return task_ids
@@ -313,10 +359,10 @@ class SimulationHandler(BaseHandler):
                 self.write({'simId': message['simId']})
                 self.finish()
             else:
-                def _seat_counts_gotten(future):
+                def _seat_counts_gotten():
                     self.simulationRecord.fields['taskIds'] = _queue_simulation()
                     self.db.simulations.insert(self.simulationRecord.fields, callback=_on_insert)
-                tornado.ioloop.IOLoop.instance().add_future(get_outgoing_seat_counts(), callback=_seat_counts_gotten)
+                get_outgoing_seat_counts(callback=_seat_counts_gotten)
         self.simulationRecord = SimulationRecord(self.nodes)
         self.simulationRecord.create(self)
         if not self.simulationRecord.is_valid():
