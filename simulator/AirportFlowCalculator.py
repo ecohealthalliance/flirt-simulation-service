@@ -289,7 +289,9 @@ class AirportFlowCalculator(object):
         airports = {}
         for i in range(simulated_passengers):
             random_start_time = start_date + datetime.timedelta(
-                seconds=random.randint(0, round((end_date - start_date).total_seconds())))
+                seconds=random.randint(0, round((
+                    datetime.timedelta(days=1) + end_date - start_date
+                ).total_seconds())))
             itinerary = simulate_passenger(
                 starting_airport,
                 # A random datetime within the given range is chosen.

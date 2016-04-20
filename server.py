@@ -16,7 +16,7 @@ from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
 
-__VERSION__ = '0.0.2'
+__VERSION__ = '0.0.3'
 
 if 'SIMULATION_PORT' in os.environ:
         _port = int(os.environ['SIMULATION_PORT'])
@@ -258,33 +258,37 @@ class SimulationHandler(BaseHandler):
                         'departureAirport._id' : 1,
                         'totalSeats' : 1,
                         'weeklyFrequency' : 1,
-                        'weeklyRepeats': {
-                            '$divide' : [
-                                {
-                                    '$subtract': [
-                                        # cond is used in place of min/max for older
-                                        # versions of mongo.
-                                        { '$cond' : [
-                                            { '$lt' : [
+                        'weeklyRepeats' : {
+                            '$let' : {
+                                'vars' : {
+                                    'millisStartToEnd' : {
+                                        '$subtract': [
+                                            { '$min' : [
                                                 self.simulationRecord.fields['endDate'],
                                                 '$discontinuedDate'
-                                            ]},
-                                            self.simulationRecord.fields['endDate'],
-                                            '$discontinuedDate'
-                                            ] },
-                                        { '$cond' : [
-                                            { '$gt' : [
+                                                ] },
+                                            { '$max' : [
                                                 self.simulationRecord.fields['startDate'],
                                                 '$effectiveDate'
-                                            ]},
-                                            self.simulationRecord.fields['startDate'],
-                                            '$effectiveDate'
-                                            ] }
-                                    ]
+                                                ] }
+                                        ]
+                                    }
                                 },
-                                # one week in milliseconds
-                                7 * 24 * 60 * 60 * 1000
-                            ]
+                                'in' : {
+                                    '$divide' : [
+                                        {
+                                            '$add' : [
+                                                '$$millisStartToEnd',
+                                                # one day in milliseconds to
+                                                # account for the end day.
+                                                24 * 60 * 60 * 1000
+                                            ]
+                                        },
+                                        # one week in milliseconds
+                                        7 * 24 * 60 * 60 * 1000
+                                    ]
+                                }
+                            }
                         }
                     }
                 }, {
