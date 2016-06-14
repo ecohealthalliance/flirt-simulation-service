@@ -143,7 +143,7 @@ class AirportFlowCalculator(object):
         starting_airport_dict = self.db.airports.find_one({'_id': starting_airport})
         if not starting_airport_dict:
             return {}
-        @lrudecorator(400)
+        @lrudecorator(300)
         def get_filtered_flights_from_airport(airport, date):
             flights = self.get_flights_from_airport(airport, date)
             # Assumption: People are unlikely to fly a long distance,
