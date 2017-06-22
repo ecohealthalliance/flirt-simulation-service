@@ -9,5 +9,5 @@ else:
 if 'MONGO_DB' in os.environ:
         mongo_db_name = os.environ['MONGO_DB']
 else:
-        mongo_db_name="grits"
+        mongo_db_name="grits-net-meteor"
 

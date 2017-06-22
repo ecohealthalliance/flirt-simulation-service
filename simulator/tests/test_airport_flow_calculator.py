@@ -9,7 +9,7 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
     SIMULATED_PASSENGERS = 2000
     @classmethod
     def setUpClass(self):
-        self.db = pymongo.MongoClient("localhost")["grits"]
+        self.db = pymongo.MongoClient("localhost")["grits-net-meteor"]
         self.db.simulated_itineraries.remove({"simulationId": "test"}, multi=True)
         self.calculator = AirportFlowCalculator(self.db)
         self.probs = {
