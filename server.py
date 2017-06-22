@@ -335,8 +335,8 @@ class SimulationHandler(BaseHandler):
             arg_list = []
             for node in self.simulationRecord.fields['departureNodes']:
                 node_passengers = int(round(float(num_passengers * outgoing_seat_counts.get(node, 0)) / total_seat_count))
-                arg_list.append({'simulationId': sim_id, 'origin_airport_id': node, 'number_of_passengers': node_passengers, 'start_date': start, 'end_date':end})
-            res = chord(tasks.simulate_passengers.s(i['simulationId'],i['origin_airport_id'],i['number_of_passengers'],i['start_date'],i['end_date']) for i in arg_list)(tasks.callback.s(email, sim_id))
+                arg_list.append({'origin_airport_id': node, 'number_of_passengers': node_passengers})
+            res = chord(tasks.simulate_passengers.s(sim_id,i['origin_airport_id'],i['number_of_passengers'],start,end) for i in arg_list)(tasks.callback.s(email, sim_id))
             task_ids = [task.id for task in res.parent.results]
             logging.info('simId: %s, task_ids: %r', sim_id, task_ids)
             return task_ids
