@@ -61,7 +61,7 @@ def simulate_passengers(simulation_id, origin_airport_id, number_of_passengers, 
 def callback(data, email, simId):
     if not email == None:
         print "Sending notificaiton email to: {0}".format(email)
-        print "For simulation https://flirt.eha.io/simulation/{0}".format(simId)
+        print "For simulation https://{0}/simulation/{1}".format(config.flirt_base,simId)
         email_from = "support@eha.io"
         email_subject = "FLIRT simulation complete"
         email_text = """Your FLIRT simulation has completed.  Please click the link below to view the results:

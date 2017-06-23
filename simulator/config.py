@@ -10,6 +10,11 @@ if 'MONGO_DB' in os.environ:
 else:
         mongo_db_name="grits-net-meteor"
 
+if 'FLIRT_BASE' in os.environ:
+        flirt_base = os.environ['FLIRT_BASE']
+else:
+        flirt_base="https://flirt.eha.io"
+
 if 'SMTP' in os.environ:
         smtp = os.environ['SMTP']
 else:
