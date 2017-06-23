@@ -336,7 +336,11 @@ class SimulationHandler(BaseHandler):
             for node in self.simulationRecord.fields['departureNodes']:
                 node_passengers = int(round(float(num_passengers * outgoing_seat_counts.get(node, 0)) / total_seat_count))
                 arg_list.append({'origin_airport_id': node, 'number_of_passengers': node_passengers})
-            res = chord(tasks.simulate_passengers.s(sim_id,i['origin_airport_id'],i['number_of_passengers'],start,end) for i in arg_list)(tasks.callback.s(email, sim_id))
+            #take all of the args from art_list and use them to create a chord of tasks for calls to simulate_passengers
+            res = chord(
+                tasks.simulate_passengers.s(sim_id,i['origin_airport_id'],i['number_of_passengers'],start,end) 
+                for i in arg_list
+                )(tasks.callback.s(email, sim_id))
             task_ids = [task.id for task in res.parent.results]
             logging.info('simId: %s, task_ids: %r', sim_id, task_ids)
             return task_ids

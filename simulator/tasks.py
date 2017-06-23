@@ -6,7 +6,6 @@ from AirportFlowCalculator import AirportFlowCalculator
 from dateutil import parser as dateparser
 import config
 import smtplib
-import settings
 from email.mime.text import MIMEText
 
 logging.basicConfig(level=logging.INFO)
@@ -74,7 +73,7 @@ def callback(data, email, simId):
         msg['From'] = email_from
         msg['To'] = email
         msg['Body'] = email_text
-        s = smtplib.SMTP_SSL(settings.smtp, settings.port)
-        s.login(settings.user, settings.password)
+        s = smtplib.SMTP_SSL(config.smtp, config.smtp_port)
+        s.login(config.smtp_user, config.smtp_password)
         s.sendmail(email_from, email, msg.as_string())
         s.quit()

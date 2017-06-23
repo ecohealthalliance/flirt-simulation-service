@@ -12,18 +12,19 @@ within the cloned repository and install the requirements.
   pip install -r requirements.txt
 ```
 
-## Settings file
-In order for email notificaitons to work a settings file must be created in the following location:
+## Email notifications
+In order for email notificaitons to work you must specify values for the smtp 
+server, port, username and password. These values should not be submitted to 
+github so it is suggested that they be set using environmental variables like so:
 
-`simulator/settings.py`
+```
+export SMTP=email-smtp.us-east-1.amazonaws.com
+export SMTP_PORT=465
+export SMTP_USER={User name}
+export SMTP_PASSWORD={Password}
+```
 
-and it must contain SMTP information in the followig format:
-```
-smtp = '{SMTP Server location}'
-port = {Port Number}
-user = '{User Name}'
-password = '{Password}'
-```
+They can also be set in the `simulator/config.py` file.
 
 ## Tornado web service
 
