@@ -15,6 +15,7 @@ from bson import json_util
 from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
+from celery import chord
 
 __VERSION__ = '0.0.3'
 
@@ -36,7 +37,7 @@ else:
 if 'MONGO_DB' in os.environ:
         _mongo_db = os.environ['MONGO_DB']
 else:
-        _mongo_db='grits'
+        _mongo_db='grits-net-meteor'
 
 define('port', default=_port, help='try running on a given port', type=int)
 define('debug', default=True, help='enable debugging', type=bool)
@@ -63,7 +64,7 @@ class SimulationRecord():
     @property
     def post_parameters(self):
         """ list of items that are expected via post"""
-        return ['departureNodes', 'numberPassengers', 'startDate', 'endDate', 'submittedBy']
+        return ['departureNodes', 'numberPassengers', 'startDate', 'endDate', 'submittedBy', 'notificationEmail']
 
     @property
     def schema(self):
@@ -76,7 +77,8 @@ class SimulationRecord():
             'startDate': { 'type': 'datetime', 'required': True},
             'endDate': { 'type': 'datetime', 'required': True},
             'submittedBy': {'type': 'string', 'regex': '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', 'required': True},
-            'submittedTime': { 'type': 'datetime', 'required': True}}
+            'submittedTime': { 'type': 'datetime', 'required': True},
+            'notificationEmail': { 'type': 'string', 'regex': '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', 'required': False}}
 
     def __init__(self, nodes):
         self.nodes = nodes
@@ -329,11 +331,17 @@ class SimulationHandler(BaseHandler):
             sim_id = self.simulationRecord.fields['simId']
             start = str(self.simulationRecord.fields['startDate'])
             end = str(self.simulationRecord.fields['endDate'])
+            email = self.simulationRecord.fields.get('notificationEmail', None)
+            arg_list = []
             for node in self.simulationRecord.fields['departureNodes']:
                 node_passengers = int(round(float(num_passengers * outgoing_seat_counts.get(node, 0)) / total_seat_count))
-                # send the job to the queue
-                res = tasks.simulate_passengers.delay(sim_id, node, node_passengers, start, end)
-                task_ids.append(res.id)
+                arg_list.append({'origin_airport_id': node, 'number_of_passengers': node_passengers})
+            #take all of the args from art_list and use them to create a chord of tasks for calls to simulate_passengers
+            res = chord(
+                tasks.simulate_passengers.s(sim_id,i['origin_airport_id'],i['number_of_passengers'],start,end) 
+                for i in arg_list
+                )(tasks.callback.s(email, sim_id))
+            task_ids = [task.id for task in res.parent.results]
             logging.info('simId: %s, task_ids: %r', sim_id, task_ids)
             return task_ids
 

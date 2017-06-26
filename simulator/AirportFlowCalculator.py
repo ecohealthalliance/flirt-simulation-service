@@ -167,7 +167,6 @@ class AirportFlowCalculator(object):
                         flight.arrival_coordinates) >=
                     distance(flight.departure_coordinates,
                         flight.arrival_coordinates))]
-            # print "Filtered Flights:", len(flights)
             return flights
         def layover_pmf(hours):
             # Implementation of Poisson PMF based on:
@@ -319,7 +318,7 @@ if __name__ == '__main__':
         "--mongo_url", default='localhost'
     )
     parser.add_argument(
-        "--db_name", default='grits'
+        "--db_name", default='grits-net-meteor'
     )
     parser.add_argument(
         "--starting_airport", default='BNA',

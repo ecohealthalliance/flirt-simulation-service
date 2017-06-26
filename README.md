@@ -6,11 +6,25 @@ simulation. Before starting the service, one should create a
 within the cloned repository and install the requirements.
 
 ```
-  git clone git@github.com:ecohealthalliance/flirt-simulation-service.git ```
+  git clone git@github.com:ecohealthalliance/flirt-simulation-service.git 
   virtualenv env
   source env/bin/activate
   pip install -r requirements.txt
 ```
+
+## Email notifications
+In order for email notificaitons to work you must specify values for the smtp 
+server, port, username and password. These values should not be submitted to 
+github so it is suggested that they be set using environmental variables like so:
+
+```
+export SMTP=email-smtp.us-east-1.amazonaws.com
+export SMTP_PORT=465
+export SMTP_USER={User name}
+export SMTP_PASSWORD={Password}
+```
+
+They can also be set in the `simulator/config.py` file.
 
 ## Tornado web service
 
