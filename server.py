@@ -239,7 +239,7 @@ class SimulationRecord():
 class SimulationHandler(BaseHandler):
     @tornado.web.asynchronous
     def post(self):
-        print "Simulation request received"
+        logging.info("Simulation request received")
         outgoing_seat_counts = {}
         def get_outgoing_seat_counts(callback):
             cursor = self.db.legs.aggregate([
@@ -259,7 +259,17 @@ class SimulationHandler(BaseHandler):
                     '$project' : {
                         'departureAirport._id' : 1,
                         'totalSeats' : 1,
-                        'weeklyFrequency' : 1,
+                        'weeklyFrequency' : {
+                            '$sum': [
+                                { '$cond': [ '$day1', 1, 0 ] },
+                                { '$cond': [ '$day2', 1, 0 ] },
+                                { '$cond': [ '$day3', 1, 0 ] },
+                                { '$cond': [ '$day4', 1, 0 ] },
+                                { '$cond': [ '$day5', 1, 0 ] },
+                                { '$cond': [ '$day6', 1, 0 ] },
+                                { '$cond': [ '$day7', 1, 0 ] },
+                            ]
+                        },
                         'weeklyRepeats' : {
                             '$let' : {
                                 'vars' : {
@@ -309,7 +319,8 @@ class SimulationHandler(BaseHandler):
             ])
             def _aggregation_complete(docs, err):
                 if err:
-                    print "Error:", err
+                    logging.info("Error:")
+                    logging.info(err)
                     raise err
                 for doc in docs:
                     outgoing_seat_counts[doc['_id']] = doc['totalSeats']
@@ -319,13 +330,16 @@ class SimulationHandler(BaseHandler):
         def _queue_simulation():
             # get parameters for the job(s)
             task_ids = []
-            print "outgoing_seat_counts", outgoing_seat_counts
+            logging.info("Outgoing seat counts:")
+            logging.info(outgoing_seat_counts)
             total_seat_count = sum(outgoing_seat_counts.values())
             num_departures = len(self.simulationRecord.fields['departureNodes'])
             if num_departures == 0:
+                logging.info("No seats for the given airports:")
                 return
             if total_seat_count == 0:
-                print "No seats for the given airports:", self.simulationRecord.fields['departureNodes']
+                logging.info("No seats for the given airports:")
+                logging.info(self.simulationRecord.fields['departureNodes'])
                 return
             num_passengers = self.simulationRecord.fields['numberPassengers']
             sim_id = self.simulationRecord.fields['simId']
