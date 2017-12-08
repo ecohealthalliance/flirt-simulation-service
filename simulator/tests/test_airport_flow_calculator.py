@@ -1,7 +1,8 @@
 # coding=utf8
 import unittest
 from testhelpers import TestHelpers
-from AirportFlowCalculator import AirportFlowCalculator
+from ..AirportFlowCalculator import AirportFlowCalculator
+from .. import config
 import pymongo
 import math
 import datetime
@@ -9,16 +10,21 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
     SIMULATED_PASSENGERS = 2000
     @classmethod
     def setUpClass(self):
-        self.db = pymongo.MongoClient("localhost")["grits-net-meteor"]
-        self.db.simulated_itineraries.remove({"simulationId": "test"}, multi=True)
+        self.db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
         self.calculator = AirportFlowCalculator(self.db)
-        self.probs = {
-            k: v.get('terminal_flow', 0.0)
-            for k, v in self.calculator.calculate(
-                "BNA", simulated_passengers=self.SIMULATED_PASSENGERS,
-                store_itins_with_id="test", include_stops_in_itin=True,
-                start_date=datetime.datetime(2016, 2, 1),
-                end_date=datetime.datetime(2016, 2, 1)).items()}
+        self.itineraries = list(self.calculator.calculate_itins(
+            "BNA", simulated_passengers=self.SIMULATED_PASSENGERS,
+            start_date=datetime.datetime(2017, 2, 1),
+            end_date=datetime.datetime(2017, 2, 1)))
+        counts = {}
+        leg_dist = {}
+        for itin in self.itineraries:
+            print itin
+            counts[itin[-1]] = counts.get(itin[-1], 0) + 1
+            leg_dist[len(itin) - 1] = leg_dist.get(len(itin) - 1, 0) + 1
+        self.probs = { k: float(v) / self.SIMULATED_PASSENGERS for k, v in counts.items() }
+        self.leg_dist = { k: float(v) / self.SIMULATED_PASSENGERS for k, v in leg_dist.items() }
+        print self.leg_dist
     def test_airport_flow_perservation(self):
         """
         The values at all the terminal probs should sum to near the number of
@@ -29,7 +35,7 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
         for airport_id, flow in self.probs.items():
             cumulative_terminal_flow += flow
         self.assertEqual(
-            round(cumulative_terminal_flow + self.calculator.error, 2), 1.0)
+            round(cumulative_terminal_flow, 2), 1.0)
     def test_origin_probability(self):
         """
         The origin should have a probability of zero
@@ -50,18 +56,7 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
             self.assertTrue(
                 self.probs.get(airport_id, 0.0) >=  prob - 4 * standard_deviation, err_msg)
     def test_leg_distribution(self):
-        results = self.db.simulated_itineraries.aggregate([
-          { "$match" : { "simulationId": "test" } },
-          {
-            "$group" : {
-                "_id": { "$size": "$stops" },
-                "total" : { "$sum" : 1 }
-            }
-          }
-        ])
-        for result in results['result']:
-            legs = result['_id'] - 1
-            leg_prob = float(result['total']) / self.SIMULATED_PASSENGERS
+        for legs, leg_prob in self.leg_dist.items():
             # due to things like airports with no outgoing flights, there
             # may be some significant deviation from the distribution.
             prob_diff = self.calculator.LEG_PROBABILITY_DISTRIBUTION[legs] - leg_prob
