@@ -31,7 +31,6 @@ SIMULATED_PASSENGERS = 1000
 date_range_end = datetime.datetime.now()
 date_range_start = date_range_end - datetime.timedelta(14)
 
-
 def compute_direct_seat_flows():
     db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
     result = defaultdict(dict)
@@ -61,23 +60,30 @@ def compute_direct_seat_flows():
 
 
 direct_seat_flows = compute_direct_seat_flows()
-total_outbound_seats = {
-    airport_id: sum(arrival_seats.values())
-    for airport_id, arrival_seats in direct_seat_flows.items() }
 
 # There are initialized in tasks to prevent the db connection from being created pre-fork.
 db = None
 my_airport_flow_calculator = None
 
-@celery_tasks.task(name='tasks.calculate_flows_for_airport')
-def calculate_flows_for_airport(origin_airport_id):
+def maybe_initialize_variables():
+    """
+    Initialize global variables that can be reused between tasks and if required.
+    """
     global my_airport_flow_calculator
     global db
     if my_airport_flow_calculator is None:
         db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
-        my_airport_flow_calculator = AirportFlowCalculator(db)
+        my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=direct_seat_flows)
+    return my_airport_flow_calculator, db
+
+@celery_tasks.task(name='tasks.calculate_flows_for_airport')
+def calculate_flows_for_airport(origin_airport_id):
+    maybe_initialize_variables()
     results = my_airport_flow_calculator.calculate(
-        origin_airport_id, simulated_passengers=SIMULATED_PASSENGERS)
+        origin_airport_id,
+        simulated_passengers=SIMULATED_PASSENGERS,
+        start_date=date_range_start,
+        end_date=date_range_end)
     # Drop all results for origin airport
     db.passengerFlows.remove({
         'departureAirport': origin_airport_id
@@ -87,7 +93,6 @@ def calculate_flows_for_airport(origin_airport_id):
     total_seats = sum(direct_seat_flows[origin_airport_id].values())
     total_passengers = int(float(total_seats) / seats_per_pasenger)
 
-    print total_passengers
     if len(results) > 0:
         db.passengerFlows.insert_many({
             'departureAirport': origin_airport_id,
@@ -97,26 +102,30 @@ def calculate_flows_for_airport(origin_airport_id):
             'startDateTime': date_range_start,
             'endDateTime': date_range_end
         } for k, v in results.items())
+    else:
+        print "No flights from: " + origin_airport_id
 
 @celery_tasks.task(name='tasks.simulate_passengers')
 def simulate_passengers(simulation_id, origin_airport_id, number_of_passengers, start_date, end_date):
-    global db
-    if db is None:
-        db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
+    maybe_initialize_variables()
     # datetime objects cannot be passed to tasks, so they are passed in as strings.
     start_date = dateparser.parse(start_date)
     end_date = dateparser.parse(end_date)
+    itins_found = False
     for itinerary in my_airport_flow_calculator.calculate_itins(
         origin_airport_id,
         simulated_passengers=number_of_passengers,
         start_date=start_date,
         end_date=end_date):
+        itins_found = True
         itin = {
             "origin": itinerary[0],
             "destination": itinerary[-1],
             "simulationId": simulation_id
         }
         db.simulated_itineraries.insert(itin)
+    if not itins_found:
+        raise Exception("No itineraries could be generated for the given parameters")
     return simulation_id
 
 @celery_tasks.task(name='tasks.callback')

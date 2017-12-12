@@ -54,17 +54,49 @@ class AirportFlowCalculator(object):
     }
     MEAN_LAYOVER_DELAY_HOURS = 2
 
-    def __init__(self, db, weight_by_departure_time=True, outgoing_seat_totals=None, aggregated_seats=None):
+    def __init__(self, db, weight_by_departure_time=True, aggregated_seats=None, use_schedules=True):
+        self.use_schedules = use_schedules
         self.db = db
         self.db.flights.ensure_index('departureAirport')
-        self.db.flights.ensure_index([('departureAirport', pymongo.ASCENDING), ('departureDateTime', pymongo.ASCENDING)])
-        airports = {}
+        self.db.flights.ensure_index(
+            [('departureAirport', pymongo.ASCENDING), ('departureDateTime', pymongo.ASCENDING)])
+        airport_to_coords = {}
         for airport in self.db.airports.find():
-            airports[airport['_id']] = airport['loc']['coordinates']
-        # TODO: Pre-compute geographically reasonable itineraries
-        self.airports = airports
+            airport_to_coords[airport['_id']] = airport['loc']['coordinates']
+        airport_distances = {}
+        self.logical_layovers = None
+        if aggregated_seats:
+            # Pre-compute geographically reasonable itineraries
+            for origin, destination_dict in aggregated_seats.items():
+                for destination, seats in destination_dict.items():
+                    airport_a, airport_b = sorted([origin, destination])
+                    if airport_a in airport_to_coords and airport_b in airport_to_coords:
+                        airport_a_coords = airport_to_coords[airport_a]
+                        airport_b_coords = airport_to_coords[airport_b]
+                        airport_distances[airport_a + '-' + airport_b] = great_circle(
+                            (airport_a_coords[1], airport_a_coords[0]),
+                            (airport_b_coords[1], airport_b_coords[0]))
+
+            def is_logical(airport_a, airport_b, intermediate_airport, ab_distance):
+                # In logical layovers the intermediate airport is closer to the destination or
+                # it is closer to the origin than the destination.
+                ia_distance = airport_distances.get('-'.join(sorted([airport_a, intermediate_airport])))
+                # If there is no flight connecting the airports the distance will be None.
+                if not ia_distance: return False
+                ib_distance = airport_distances.get('-'.join(sorted([airport_b, intermediate_airport])))
+                if not ib_distance: return False
+                return ib_distance < ab_distance or ia_distance < ab_distance
+
+            logical_layovers = {}
+            for airport_pair, distance in airport_distances.items():
+                airport_a, airport_b = airport_pair.split('-')
+                logical_layovers[airport_pair] = set([
+                    intermediate_airport
+                    for intermediate_airport in airport_to_coords.keys()
+                    if is_logical(airport_a, airport_b, intermediate_airport, distance)])
+            self.logical_layovers = logical_layovers
+        self.airports = airport_to_coords
         self.weight_by_departure_time = weight_by_departure_time
-        self.outgoing_seat_totals = outgoing_seat_totals
         self.aggregated_seats = aggregated_seats
         # LEG_PROBABILITY_DISTRIBUTION shows the probability of ending a journey
         # at each leg given one is at the start of the journey.
@@ -107,7 +139,7 @@ class AirportFlowCalculator(object):
         flights = []
         for result in query_results:
             flights.append(LightweightFlight(result))
-        print "Flights:", len(flights)
+        # print "Flights:", len(flights)
         return flights
 
     def calculate_itins(self,
@@ -141,6 +173,18 @@ class AirportFlowCalculator(object):
                                                         departure_airport_arrival_time.year,
                                                         departure_airport_arrival_time.month,
                                                         departure_airport_arrival_time.day))
+
+            if len(itin_sofar) - 1 >= self.max_legs:
+                return itin_sofar
+            initial_origin = itin_sofar[0]
+            layover_set = set(itin_sofar[1:])
+            if self.logical_layovers:
+                # only include flights with logical layovers
+                flights = [
+                    flight for flight in flights
+                    if layover_set.issubset(self.logical_layovers.get('-'.join(sorted([
+                        initial_origin,
+                        flight.arrival_airport])), set()))]
             # only include flights that the passenger arrived prior to
             flights = [
                 flight for flight in flights
@@ -186,11 +230,11 @@ class AirportFlowCalculator(object):
                         filtered_probs.append(prob)
                 flights = filtered_flights
                 layover_probs = filtered_probs
-            # departure_airport_obj = self.db.airports.find_one({'_id': departure_airport})
             if len(flights) == 0:
                 # There are no flights, so we assume the passenger leaves
                 # the airport.
-                return [departure_airport]
+                return itin_sofar
+
             inflow_sofar = 0.0
             for idx, flight in enumerate(flights):
                 # An airport's inflow is the number of passengers from the 
@@ -208,7 +252,7 @@ class AirportFlowCalculator(object):
                 terminal_flow = inflow * self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar)] / (1.0 - inflow_sofar)
                 outflow = inflow * (1.0 - self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar)]) / (1.0 - inflow_sofar)
                 random_number = random.random()
-                if len(itin_sofar) - 1 < self.max_legs and random_number <= outflow:
+                if random_number <= outflow:
                     # Find airports that could be arrived at through transfers.
                     return simulate_passenger(
                         itin_sofar + [flight.arrival_airport],
@@ -217,10 +261,9 @@ class AirportFlowCalculator(object):
                     return itin_sofar + [flight.arrival_airport]
                 else:
                     inflow_sofar += inflow
-            # The function might not return in the for loop above due to the
-            # max_legs cutoff or floating point error.
-            # In this case we assume the passenger stops at the departure airport.
-            return itin_sofar
+            # The function might not return in the for loop above due to floating point error.
+            # In this case we assume the passenger stops at the last arrival airport iterated over.
+            return itin_sofar + [flight.arrival_airport]
 
         def simulate_passenger_on_aggregate_flows(itin_sofar):
             """
@@ -228,12 +271,25 @@ class AirportFlowCalculator(object):
             """
             seat_portion_so_far = 0.0
             departure_airport = itin_sofar[-1]
-            for idx, (destination, seats) in enumerate(self.aggregated_seats[departure_airport].items()):
-                seat_portion_for_dest = float(seats) / self.outgoing_seat_totals[departure_airport]
+            if self.logical_layovers:
+                initial_origin = itin_sofar[0]
+                layover_set = set(itin_sofar[1:])
+                valid_destinations = {}
+                for destination, seats in self.aggregated_seats[departure_airport].items():
+                    # filter out itineraries that have illogical layovers.
+                    if layover_set.issubset(self.logical_layovers.get('-'.join(sorted([
+                        initial_origin,
+                        destination])), set())):
+                        valid_destinations[destination] = seats
+            else:
+                valid_destinations = self.aggregated_seats[departure_airport]
+            outgoing_seat_total = sum(valid_destinations.values())
+            for destination, seats in valid_destinations.items():
+                seat_portion_for_dest = float(seats) / outgoing_seat_total
                 terminal_dest_portion = seat_portion_for_dest * self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar)] / (
-                1.0 - seat_portion_so_far)
+                    1.0 - seat_portion_so_far)
                 ongoing_portion = seat_portion_for_dest * (
-                1.0 - self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar) - 1]) / (1.0 - seat_portion_so_far)
+                    1.0 - self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar) - 1]) / (1.0 - seat_portion_so_far)
                 random_number = random.random()
                 if len(itin_sofar) - 1 < self.max_legs and random_number <= ongoing_portion:
                     # Find airports that could be arrived at through transfers.
@@ -242,17 +298,16 @@ class AirportFlowCalculator(object):
                     return itin_sofar + [destination]
                 else:
                     seat_portion_so_far += seat_portion_for_dest
-            # The function might not return in the for loop above due to the
-            # max_legs cutoff or floating point error.
-            # In this case we assume the passenger stops at the departure airport.
-            return itin_sofar
+            # The function might not return in the for loop above due to floating point error.
+            # In this case we assume the passenger stops at the last destination iterated over.
+            return itin_sofar + [destination]
 
-        if self.aggregated_seats:
-            for i in range(simulated_passengers):
+        no_flight_sims = 0
+        successful_sims = 0
+        while successful_sims < simulated_passengers:
+            if not self.use_schedules:
                 itinerary = simulate_passenger_on_aggregate_flows([starting_airport])
-                yield itinerary
-        else:
-            for i in range(simulated_passengers):
+            else:
                 random_start_time = start_date + datetime.timedelta(
                     seconds=random.randint(0, round((
                                                         datetime.timedelta(days=1) + end_date - start_date
@@ -261,7 +316,16 @@ class AirportFlowCalculator(object):
                     [starting_airport],
                     # A random datetime within the given range is chosen.
                     departure_airport_arrival_time=random_start_time)
+            if len(itinerary) > 1:
+                no_flight_sims = 0
+                successful_sims += 1
                 yield itinerary
+            elif no_flight_sims < simulated_passengers:
+                no_flight_sims += 1
+            else:
+                # itineraries with a single airport will keep occuring if there are no outgoing flights,
+                # so the simulation can be stopped.
+                return
 
     def calculate(self,
                   starting_airport,
@@ -270,10 +334,8 @@ class AirportFlowCalculator(object):
                   end_date=datetime.datetime.now()):
         terminal_passengers_by_airport = defaultdict(int)
         for itinerary in self.calculate_itins(starting_airport, simulated_passengers, start_date, end_date):
-            print itinerary
-            if len(itinerary) > 1:
-                terminal_airport = itinerary[-1]
-                terminal_passengers_by_airport[terminal_airport] += 1
+            terminal_airport = itinerary[-1]
+            terminal_passengers_by_airport[terminal_airport] += 1
         return {
             airport: dict(
                 _id=airport,

@@ -58,16 +58,19 @@ def main():
         return result
 
     direct_seat_flows = compute_direct_seat_flows()
-    total_outbound_seats = {
-        airport_id: sum(arrival_seats.values())
-        for airport_id, arrival_seats in direct_seat_flows.items()}
 
-    calculator_with_schedules = AirportFlowCalculator(db)
+    calculator_with_schedules = AirportFlowCalculator(db, aggregated_seats=direct_seat_flows)
     calculator_aggregated_flows = AirportFlowCalculator(db,
-                                                        outgoing_seat_totals=total_outbound_seats,
+                                                        use_schedules=False,
                                                         aggregated_seats=direct_seat_flows)
 
     for airport_code in ['CDG', 'TPE', 'SEA', 'JFK', 'CPT']:
+        sim_df = pd.DataFrame(calculator_aggregated_flows.calculate(
+            airport_code,
+            simulated_passengers=int(SIMULATED_PASSENGERS)).values()).sort_values('terminal_flow')
+        print sim_df
+        sim_df.to_csv(airport_code + '_aggregated_flows.csv')
+
         sim_df = pd.DataFrame(calculator_with_schedules.calculate(
             airport_code,
             simulated_passengers=int(SIMULATED_PASSENGERS),
@@ -75,11 +78,5 @@ def main():
             end_date=date_range_end).values()).sort_values('terminal_flow')
         print sim_df
         sim_df.to_csv(airport_code + '_with_schedules.csv')
-
-        sim_df = pd.DataFrame(calculator_aggregated_flows.calculate(
-            airport_code,
-            simulated_passengers=int(SIMULATED_PASSENGERS)).values()).sort_values('terminal_flow')
-        print sim_df
-        sim_df.to_csv(airport_code + '_aggregated_flows.csv')
 
 main()
