@@ -3,7 +3,7 @@ import celery
 import logging
 import pymongo
 import datetime
-from simulator.AirportFlowCalculator import AirportFlowCalculator
+from simulator.AirportFlowCalculator import AirportFlowCalculator, compute_direct_seat_flows
 from dateutil import parser as dateparser
 from collections import defaultdict
 import pandas as pd
@@ -28,36 +28,7 @@ def main():
     date_range_end = datetime.datetime.now()
     date_range_start = date_range_end - datetime.timedelta(14)
 
-    def compute_direct_seat_flows():
-        result = defaultdict(dict)
-        count = 0
-        for pair in db.flights.aggregate([
-            {
-                "$match": {
-                    "departureDateTime": {
-                        "$lte": date_range_end,
-                        "$gte": date_range_start
-                    }
-                }
-            }, {
-                '$group': {
-                    '_id': {
-                        '$concat': ['$departureAirport', '-', '$arrivalAirport']
-                    },
-                    'totalSeats': {
-                        '$sum': '$totalSeats'
-                    }
-                }
-            }
-        ]):
-            if pair['totalSeats'] > 0:
-                origin, destination = pair['_id'].split('-')
-                result[origin][destination] = pair['totalSeats']
-                count += 1
-        print "total sets:", count
-        return result
-
-    direct_seat_flows = compute_direct_seat_flows()
+    direct_seat_flows = compute_direct_seat_flows(db, date_range_start, date_range_end)
 
     calculator_with_schedules = AirportFlowCalculator(db, aggregated_seats=direct_seat_flows)
     calculator_aggregated_flows = AirportFlowCalculator(db,

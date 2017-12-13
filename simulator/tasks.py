@@ -2,7 +2,7 @@ import celery
 import logging
 import pymongo
 import datetime
-from AirportFlowCalculator import AirportFlowCalculator
+from AirportFlowCalculator import AirportFlowCalculator, compute_direct_seat_flows
 from dateutil import parser as dateparser
 import config
 import smtplib
@@ -31,35 +31,9 @@ SIMULATED_PASSENGERS = 1000
 date_range_end = datetime.datetime.now()
 date_range_start = date_range_end - datetime.timedelta(14)
 
-def compute_direct_seat_flows():
-    db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
-    result = defaultdict(dict)
-    for pair in db.flights.aggregate([
-        {
-            "$match": {
-                "departureDateTime": {
-                    "$lte": date_range_end,
-                    "$gte": date_range_start
-                }
-            }
-        }, {
-            '$group': {
-                '_id': {
-                    '$concat': ['$departureAirport', '-', '$arrivalAirport']
-                },
-                'totalSeats': {
-                    '$sum': '$totalSeats'
-                }
-            }
-        }
-    ]):
-        if pair['totalSeats'] > 0:
-            origin, destination = pair['_id'].split('-')
-            result[origin][destination] = pair['totalSeats']
-    return result
-
-
-direct_seat_flows = compute_direct_seat_flows()
+direct_seat_flows = compute_direct_seat_flows(
+    pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name],
+    date_range_start, date_range_end)
 
 # There are initialized in tasks to prevent the db connection from being created pre-fork.
 db = None

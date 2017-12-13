@@ -15,6 +15,60 @@ import math
 import random
 from pylru import lrudecorator
 from collections import defaultdict
+import numpy
+
+
+def compute_direct_seat_flows(db, date_range_start, date_range_end):
+    result = defaultdict(dict)
+    for pair in db.flights.aggregate([
+        {
+            "$match": {
+                "departureDateTime": {
+                    "$lte": date_range_end,
+                    "$gte": date_range_start
+                }
+            }
+        }, {
+            '$group': {
+                '_id': {
+                    '$concat': ['$departureAirport', '-', '$arrivalAirport']
+                },
+                'totalSeats': {
+                    '$sum': '$totalSeats'
+                }
+            }
+        }
+    ]):
+        if pair['totalSeats'] > 0:
+            origin, destination = pair['_id'].split('-')
+            result[origin][destination] = pair['totalSeats']
+    return result
+
+
+def compute_airport_distances(airport_to_coords_items):
+    """
+    :param airport_to_coords_items: A array of airports and their coordinates alphabetically sorted by code.
+    :return: A distance matrix where the row/column index corresponds to the index of the airport in the array.
+    """
+    dist_mat = numpy.zeros(shape=(len(airport_to_coords_items), len(airport_to_coords_items)))
+    for idx, (airport_a, (airport_a_long, airport_a_lat)) in enumerate(airport_to_coords_items):
+        j = idx
+        for airport_b, (airport_b_long, airport_b_lat) in airport_to_coords_items[idx:]:
+            dist_mat[idx, j] = great_circle(
+                (airport_a_lat, airport_a_long),
+                (airport_b_lat, airport_b_long)).kilometers
+            j += 1
+    # Make distance matrix symmetrical.
+    dist_mat += dist_mat.T
+    return dist_mat
+
+def is_logical(airport_distance_matrix, airport_a, airport_b, intermediate_airport):
+    # In logical layovers the intermediate airport is closer to the destination or
+    # it is closer to the origin than the destination is to the origin.
+    ab_distance = airport_distance_matrix.item(airport_a, airport_b)
+    ia_distance = airport_distance_matrix.item(airport_a, intermediate_airport)
+    ib_distance = airport_distance_matrix.item(airport_b, intermediate_airport)
+    return ib_distance < ab_distance or ia_distance < ab_distance
 
 
 # Memoization speeds up the simulation but its use is limited by memory consumption.
@@ -54,48 +108,31 @@ class AirportFlowCalculator(object):
     }
     MEAN_LAYOVER_DELAY_HOURS = 2
 
-    def __init__(self, db, weight_by_departure_time=True, aggregated_seats=None, use_schedules=True):
+    def __init__(self, db, weight_by_departure_time=True, aggregated_seats=None, use_schedules=True, use_layover_checking=True):
         self.use_schedules = use_schedules
         self.db = db
         self.db.flights.ensure_index('departureAirport')
         self.db.flights.ensure_index(
             [('departureAirport', pymongo.ASCENDING), ('departureDateTime', pymongo.ASCENDING)])
-        airport_to_coords = {}
-        for airport in self.db.airports.find():
-            airport_to_coords[airport['_id']] = airport['loc']['coordinates']
-        airport_distances = {}
-        self.logical_layovers = None
-        if aggregated_seats:
+        self.use_layover_checking = use_layover_checking
+        if self.use_layover_checking:
             # Pre-compute geographically reasonable itineraries
-            for origin, destination_dict in aggregated_seats.items():
-                for destination, seats in destination_dict.items():
-                    airport_a, airport_b = sorted([origin, destination])
-                    if airport_a in airport_to_coords and airport_b in airport_to_coords:
-                        airport_a_coords = airport_to_coords[airport_a]
-                        airport_b_coords = airport_to_coords[airport_b]
-                        airport_distances[airport_a + '-' + airport_b] = great_circle(
-                            (airport_a_coords[1], airport_a_coords[0]),
-                            (airport_b_coords[1], airport_b_coords[0]))
-
-            def is_logical(airport_a, airport_b, intermediate_airport, ab_distance):
-                # In logical layovers the intermediate airport is closer to the destination or
-                # it is closer to the origin than the destination.
-                ia_distance = airport_distances.get('-'.join(sorted([airport_a, intermediate_airport])))
-                # If there is no flight connecting the airports the distance will be None.
-                if not ia_distance: return False
-                ib_distance = airport_distances.get('-'.join(sorted([airport_b, intermediate_airport])))
-                if not ib_distance: return False
-                return ib_distance < ab_distance or ia_distance < ab_distance
-
-            logical_layovers = {}
-            for airport_pair, distance in airport_distances.items():
-                airport_a, airport_b = airport_pair.split('-')
-                logical_layovers[airport_pair] = set([
-                    intermediate_airport
-                    for intermediate_airport in airport_to_coords.keys()
-                    if is_logical(airport_a, airport_b, intermediate_airport, distance)])
-            self.logical_layovers = logical_layovers
-        self.airports = airport_to_coords
+            active_airports = set()
+            for origin, destinations in aggregated_seats.items():
+                active_airports.add(origin)
+                active_airports.update(destinations)
+            if aggregated_seats:
+                airport_to_coords = {}
+                for airport in self.db.airports.find():
+                    if airport['_id'] in active_airports:
+                        airport_to_coords[airport['_id']] = airport['loc']['coordinates']
+            else:
+                airport_to_coords = {airport['_id']: airport['loc']['coordinates']
+                                     for airport in self.db.airports.find()}
+            airport_to_coords_items = sorted(airport_to_coords.items(), key=lambda x: x[0])
+            self.airport_to_coords_items = airport_to_coords_items
+            self.airport_to_idx = {airport: idx for idx, (airport, noop) in enumerate(airport_to_coords_items)}
+            self.airport_distance_matrix = compute_airport_distances(airport_to_coords_items)
         self.weight_by_departure_time = weight_by_departure_time
         self.aggregated_seats = aggregated_seats
         # LEG_PROBABILITY_DISTRIBUTION shows the probability of ending a journey
@@ -110,6 +147,28 @@ class AirportFlowCalculator(object):
                     for n in range(1, leg_num)])))
             for leg_num, leg_prob in self.LEG_PROBABILITY_DISTRIBUTION.items()}
         self.max_legs = len(self.LEG_PROBABILITY_DISTRIBUTION) - 1
+
+    def check_logical_layovers(self, origin, destination, layover_set):
+        """
+        Return true if the set of layovers in layover set are all logical if they come between the given origin and
+        destination airports. The criteria used to determine if a layover is logical is essentially
+        to draw a circle around the start and end airports with a radius equal to the distance between them
+        and only allow layovers airports within at least one of the two circles.
+        Another way to put it is that if a layover flight leg both takes longer than a direct flight to the destination
+        would and puts the passenger at a location further from the destination than they were initially it is illogical.
+        """
+        if origin == destination:
+            return False
+        a = self.airport_to_idx.get(origin)
+        b = self.airport_to_idx.get(destination)
+        if a is None or b is None:
+            # when the airport location is unknown the layover cannot be checked.
+            return True
+        result = all([
+            is_logical(self.airport_distance_matrix, a, b, self.airport_to_idx[intermediate])
+            for intermediate in layover_set
+            if intermediate in self.airport_to_idx])
+        return result
 
     @lrudecorator(20000)
     def get_flights_from_airport(self, airport, date):
@@ -178,13 +237,11 @@ class AirportFlowCalculator(object):
                 return itin_sofar
             initial_origin = itin_sofar[0]
             layover_set = set(itin_sofar[1:])
-            if self.logical_layovers:
+            if self.use_layover_checking:
                 # only include flights with logical layovers
                 flights = [
                     flight for flight in flights
-                    if layover_set.issubset(self.logical_layovers.get('-'.join(sorted([
-                        initial_origin,
-                        flight.arrival_airport])), set()))]
+                    if self.check_logical_layovers(initial_origin, flight.arrival_airport, layover_set)]
             # only include flights that the passenger arrived prior to
             flights = [
                 flight for flight in flights
@@ -271,15 +328,15 @@ class AirportFlowCalculator(object):
             """
             seat_portion_so_far = 0.0
             departure_airport = itin_sofar[-1]
-            if self.logical_layovers:
+            if self.use_layover_checking:
                 initial_origin = itin_sofar[0]
                 layover_set = set(itin_sofar[1:])
                 valid_destinations = {}
                 for destination, seats in self.aggregated_seats[departure_airport].items():
                     # filter out itineraries that have illogical layovers.
-                    if layover_set.issubset(self.logical_layovers.get('-'.join(sorted([
-                        initial_origin,
-                        destination])), set())):
+                    if self.check_logical_layovers(initial_origin, destination, layover_set):
+                        if initial_origin == destination:
+                            raise Exception("Circular itinerary")
                         valid_destinations[destination] = seats
             else:
                 valid_destinations = self.aggregated_seats[departure_airport]
@@ -302,6 +359,11 @@ class AirportFlowCalculator(object):
             # In this case we assume the passenger stops at the last destination iterated over.
             return itin_sofar + [destination]
 
+        if self.aggregated_seats:
+            if len(self.aggregated_seats[starting_airport]) == 0:
+                # No outgoing flights for airport
+                print "Skipping:", starting_airport
+                return
         no_flight_sims = 0
         successful_sims = 0
         while successful_sims < simulated_passengers:
