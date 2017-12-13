@@ -25,7 +25,5 @@ def main():
         for i in db.airports.find()
     ])()
     print res.get(timeout=None, interval=0.5)
-    task_ids = [task.id for task in res.parent.results]
-    logging.info('task_ids: %r', task_ids)
 
 main()

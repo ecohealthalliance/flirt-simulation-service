@@ -26,7 +26,7 @@ celery_tasks.conf.update(
     }
 )
 
-SIMULATED_PASSENGERS = 1000
+SIMULATED_PASSENGERS = 10000
 
 date_range_end = datetime.datetime.now()
 date_range_start = date_range_end - datetime.timedelta(14)
@@ -53,21 +53,20 @@ def maybe_initialize_variables():
 @celery_tasks.task(name='tasks.calculate_flows_for_airport')
 def calculate_flows_for_airport(origin_airport_id):
     maybe_initialize_variables()
-    results = my_airport_flow_calculator.calculate(
-        origin_airport_id,
-        simulated_passengers=SIMULATED_PASSENGERS,
-        start_date=date_range_start,
-        end_date=date_range_end)
     # Drop all results for origin airport
     db.passengerFlows.remove({
         'departureAirport': origin_airport_id
     })
 
-    seats_per_pasenger = sum(legs * value for legs, value in AirportFlowCalculator.LEG_PROBABILITY_DISTRIBUTION.items())
-    total_seats = sum(direct_seat_flows[origin_airport_id].values())
-    total_passengers = int(float(total_seats) / seats_per_pasenger)
-
+    results = my_airport_flow_calculator.calculate(
+        origin_airport_id,
+        simulated_passengers=SIMULATED_PASSENGERS,
+        start_date=date_range_start,
+        end_date=date_range_end)
     if len(results) > 0:
+        seats_per_pasenger = sum(legs * value for legs, value in AirportFlowCalculator.LEG_PROBABILITY_DISTRIBUTION.items())
+        total_seats = sum(direct_seat_flows[origin_airport_id].values())
+        total_passengers = int(float(total_seats) / seats_per_pasenger)
         db.passengerFlows.insert_many({
             'departureAirport': origin_airport_id,
             'arrivalAirport': k,
@@ -76,8 +75,10 @@ def calculate_flows_for_airport(origin_airport_id):
             'startDateTime': date_range_start,
             'endDateTime': date_range_end
         } for k, v in results.items())
+        return len(results)
     else:
         print "No flights from: " + origin_airport_id
+        return 0
 
 @celery_tasks.task(name='tasks.simulate_passengers')
 def simulate_passengers(simulation_id, origin_airport_id, number_of_passengers, start_date, end_date):

@@ -170,7 +170,7 @@ class AirportFlowCalculator(object):
             if intermediate in self.airport_to_idx])
         return result
 
-    @lrudecorator(20000)
+    @lrudecorator(30000)
     def get_flights_from_airport(self, airport, date):
         """
         Retrieve all the flight that that happened up to 2 days after the given
@@ -362,7 +362,6 @@ class AirportFlowCalculator(object):
         if self.aggregated_seats:
             if len(self.aggregated_seats[starting_airport]) == 0:
                 # No outgoing flights for airport
-                print "Skipping:", starting_airport
                 return
         no_flight_sims = 0
         successful_sims = 0
