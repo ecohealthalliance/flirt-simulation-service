@@ -7,12 +7,11 @@ from dateutil import parser as dateparser
 import config
 import smtplib
 from email.mime.text import MIMEText
-from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BROKER_URL = config.mongo_uri + '/taskstest'
+BROKER_URL = config.mongo_uri + '/tasks'
 
 celery_tasks = celery.Celery('tasks', broker=BROKER_URL)
 celery_tasks.conf.update(
@@ -26,12 +25,28 @@ celery_tasks.conf.update(
     }
 )
 
-direct_seat_flows = compute_direct_seat_flows(
+all_time_direct_seat_flows = compute_direct_seat_flows(
     pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {})
 
-# There are initialized in tasks to prevent the db connection from being created pre-fork.
+direct_seat_flows = None
+prior_start_date = None
 db = None
 my_airport_flow_calculator = None
+current_mode = None
+
+
+def maybe_update_direct_seat_flows(start_date, end_date):
+    global direct_seat_flows
+    global prior_start_date
+    if direct_seat_flows is None or prior_start_date != start_date:
+        prior_start_date = start_date
+        direct_seat_flows = compute_direct_seat_flows(
+            pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {
+                "departureDateTime": {
+                    "$lte": end_date,
+                    "$gte": start_date
+                }
+            })
 
 def maybe_initialize_variables():
     """
@@ -41,27 +56,26 @@ def maybe_initialize_variables():
     global db
     if my_airport_flow_calculator is None:
         db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
-        my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=direct_seat_flows)
+        my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
     return my_airport_flow_calculator, db
 
-@celery_tasks.task(name='tasks.calculate_flows_for_airport')
-def calculate_flows_for_airport(origin_airport_id):
+@celery_tasks.task(name='tasks.calculate_flows_for_airport_14_days')
+def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
     SIMULATED_PASSENGERS = 10000
     period_days = 14
-    date_range_end = datetime.datetime.now()
-    date_range_start = date_range_end - datetime.timedelta(period_days)
-
+    start_date = datetime.datetime.strptime(start_date.split('T')[0], '%Y-%m-%d')
+    end_date = start_date + datetime.timedelta(period_days)
+    maybe_update_direct_seat_flows(start_date, end_date)
     maybe_initialize_variables()
     # Drop all results for origin airport
-    db.passengerFlows.remove({
+    db.passengerFlows.delete_many({
         'departureAirport': origin_airport_id
     })
-
     results = my_airport_flow_calculator.calculate(
         origin_airport_id,
         simulated_passengers=SIMULATED_PASSENGERS,
-        start_date=date_range_start,
-        end_date=date_range_end)
+        start_date=start_date,
+        end_date=end_date)
     if len(results) > 0:
         seats_per_pasenger = sum(legs * value for legs, value in AirportFlowCalculator.LEG_PROBABILITY_DISTRIBUTION.items())
         total_seats = sum(direct_seat_flows[origin_airport_id].values())
@@ -71,8 +85,8 @@ def calculate_flows_for_airport(origin_airport_id):
             'arrivalAirport': k,
             'estimatedPassengers': v['terminal_flow'] * total_passengers,
             'recordDate': datetime.datetime.now(),
-            'startDateTime': date_range_start,
-            'endDateTime': date_range_end,
+            'startDateTime': start_date,
+            'endDateTime': end_date,
             'periodDays': period_days
         } for k, v in results.items())
         return len(results)
