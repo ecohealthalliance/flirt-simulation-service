@@ -2,7 +2,7 @@ import celery
 import logging
 import pymongo
 import datetime
-from AirportFlowCalculator import AirportFlowCalculator
+from AirportFlowCalculator import AirportFlowCalculator, compute_direct_seat_flows
 from dateutil import parser as dateparser
 import config
 import smtplib
@@ -25,36 +25,96 @@ celery_tasks.conf.update(
     }
 )
 
-db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
-my_airport_flow_calculator = AirportFlowCalculator(db)
+all_time_direct_seat_flows = compute_direct_seat_flows(
+    pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {})
 
-SIMULATED_PASSENGERS = 1000
+direct_seat_flows = None
+prior_start_date = None
+db = None
+my_airport_flow_calculator = None
+current_mode = None
 
-@celery_tasks.task(name='tasks.calculate_flows_for_airport')
-def calculate_flows_for_airport(airport_id):
+
+def maybe_update_direct_seat_flows(start_date, end_date):
+    global direct_seat_flows
+    global prior_start_date
+    if direct_seat_flows is None or prior_start_date != start_date:
+        prior_start_date = start_date
+        direct_seat_flows = compute_direct_seat_flows(
+            pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {
+                "departureDateTime": {
+                    "$lte": end_date,
+                    "$gte": start_date
+                }
+            })
+
+def maybe_initialize_variables():
+    """
+    Initialize global variables that can be reused between tasks and if required.
+    """
+    global my_airport_flow_calculator
+    global db
+    if my_airport_flow_calculator is None:
+        db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
+        my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
+    return my_airport_flow_calculator, db
+
+@celery_tasks.task(name='tasks.calculate_flows_for_airport_14_days')
+def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
+    SIMULATED_PASSENGERS = 10000
+    period_days = 14
+    start_date = datetime.datetime.strptime(start_date.split('T')[0], '%Y-%m-%d')
+    end_date = start_date + datetime.timedelta(period_days)
+    maybe_update_direct_seat_flows(start_date, end_date)
+    maybe_initialize_variables()
+    # Drop all results for origin airport
+    db.passengerFlows.delete_many({
+        'departureAirport': origin_airport_id
+    })
     results = my_airport_flow_calculator.calculate(
-        airport_id, simulated_passengers=SIMULATED_PASSENGERS)
-    db.heatmap.find_one_and_replace(
-        {'_id': airport_id},
-        dict(
-            { k: v['terminal_flow'] for k, v in results.items() },
-            lastModified=datetime.datetime.now(),
-            simulatedPassengers=SIMULATED_PASSENGERS,
-            version='0.0.1'),
-        upsert=True)
-    return airport_id, len(results)
+        origin_airport_id,
+        simulated_passengers=SIMULATED_PASSENGERS,
+        start_date=start_date,
+        end_date=end_date)
+    if len(results) > 0:
+        seats_per_pasenger = sum(legs * value for legs, value in AirportFlowCalculator.LEG_PROBABILITY_DISTRIBUTION.items())
+        total_seats = sum(direct_seat_flows[origin_airport_id].values())
+        total_passengers = int(float(total_seats) / seats_per_pasenger)
+        db.passengerFlows.insert_many({
+            'departureAirport': origin_airport_id,
+            'arrivalAirport': k,
+            'estimatedPassengers': v['terminal_flow'] * total_passengers,
+            'recordDate': datetime.datetime.now(),
+            'startDateTime': start_date,
+            'endDateTime': end_date,
+            'periodDays': period_days
+        } for k, v in results.items())
+        return len(results)
+    else:
+        print "No flights from: " + origin_airport_id
+        return 0
 
 @celery_tasks.task(name='tasks.simulate_passengers')
 def simulate_passengers(simulation_id, origin_airport_id, number_of_passengers, start_date, end_date):
+    maybe_initialize_variables()
     # datetime objects cannot be passed to tasks, so they are passed in as strings.
     start_date = dateparser.parse(start_date)
     end_date = dateparser.parse(end_date)
-    results = my_airport_flow_calculator.calculate(
+    itins_found = False
+    for itinerary in my_airport_flow_calculator.calculate_itins(
         origin_airport_id,
-        store_itins_with_id=simulation_id,
+        simulated_passengers=number_of_passengers,
         start_date=start_date,
-        end_date=end_date,
-        simulated_passengers=number_of_passengers)
+        end_date=end_date):
+        itins_found = True
+        itin = {
+            "origin": itinerary[0],
+            "destination": itinerary[-1],
+            "simulationId": simulation_id
+        }
+        db.simulated_itineraries.insert(itin)
+    if not itins_found:
+        raise Exception("No itineraries could be generated for the given parameters")
     return simulation_id
 
 @celery_tasks.task(name='tasks.callback')
