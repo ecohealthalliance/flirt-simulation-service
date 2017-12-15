@@ -26,14 +26,8 @@ celery_tasks.conf.update(
     }
 )
 
-SIMULATED_PASSENGERS = 10000
-
-date_range_end = datetime.datetime.now()
-date_range_start = date_range_end - datetime.timedelta(14)
-
 direct_seat_flows = compute_direct_seat_flows(
-    pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name],
-    date_range_start, date_range_end)
+    pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {})
 
 # There are initialized in tasks to prevent the db connection from being created pre-fork.
 db = None
@@ -52,6 +46,11 @@ def maybe_initialize_variables():
 
 @celery_tasks.task(name='tasks.calculate_flows_for_airport')
 def calculate_flows_for_airport(origin_airport_id):
+    SIMULATED_PASSENGERS = 10000
+    period_days = 14
+    date_range_end = datetime.datetime.now()
+    date_range_start = date_range_end - datetime.timedelta(period_days)
+
     maybe_initialize_variables()
     # Drop all results for origin airport
     db.passengerFlows.remove({
@@ -73,7 +72,8 @@ def calculate_flows_for_airport(origin_airport_id):
             'estimatedPassengers': v['terminal_flow'] * total_passengers,
             'recordDate': datetime.datetime.now(),
             'startDateTime': date_range_start,
-            'endDateTime': date_range_end
+            'endDateTime': date_range_end,
+            'periodDays': period_days
         } for k, v in results.items())
         return len(results)
     else:

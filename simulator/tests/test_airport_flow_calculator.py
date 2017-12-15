@@ -7,7 +7,7 @@ from .. import config
 import pymongo
 import math
 import datetime
-
+import numpy as np
 
 class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
     SIMULATED_PASSENGERS = 2000
@@ -16,11 +16,17 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
     def setUpClass(self):
         self.db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
         start = datetime.datetime(2017, 2, 1)
-        end = datetime.datetime(2017, 2, 1)
-        direct_seat_flows = compute_direct_seat_flows(self.db, start, end)
+        end = datetime.datetime(2017, 2, 2)
+        direct_seat_flows = compute_direct_seat_flows(self.db, {
+            "departureDateTime": {
+                "$lte": end,
+                "$gte": start
+            }
+        })
         self.calculator = AirportFlowCalculator(self.db, aggregated_seats=direct_seat_flows)
         self.itineraries = list(self.calculator.calculate_itins(
-            "BNA", simulated_passengers=self.SIMULATED_PASSENGERS,
+            "BNA",
+            simulated_passengers=self.SIMULATED_PASSENGERS,
             start_date=start,
             end_date=end))
         counts = {}
@@ -80,7 +86,7 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
         airport_to_coords = {}
         for airport in self.db.airports.find({
             '_id': {
-                '$in': ['SEA', 'NRT', 'TPE', 'BNA', 'ECP']
+                '$in': ['SEA', 'NRT', 'TPE', 'BNA', 'ECP', 'JFK', 'CDG', 'CPT', 'LAX', 'MEX']
             }
         }):
             airport_to_coords[airport['_id']] = airport['loc']['coordinates']
@@ -95,3 +101,17 @@ class TestAirportFlowCalculator(unittest.TestCase, TestHelpers):
         self.assertTrue(is_logical(dist_mat, nrt_idx, sea_idx, tpe_idx))
         self.assertFalse(is_logical(dist_mat, nrt_idx, tpe_idx, sea_idx))
         self.assertFalse(is_logical(dist_mat, bna_idx, bna_idx, ecp_idx))
+        # Check that the furthest airport form any airport is no less than half of the distance between
+        # the furthest apart airports.
+        max_dist_per_airport = np.max(dist_mat, axis=1)
+        print np.min(max_dist_per_airport)
+        self.assertTrue(np.max(max_dist_per_airport) <= 2 * np.min(max_dist_per_airport))
+        # test the number of logical layovers increases on average with distance.
+        logical_layover_histogram = []
+        for a in np.argsort(dist_mat[0,:]):
+            logical_layover_histogram.append(len([
+                i for i in range(dist_mat.shape[0])
+                if is_logical(dist_mat, 0, a, i)
+            ]))
+        print logical_layover_histogram
+        self.assertTrue(sum(logical_layover_histogram[:5]) < sum(logical_layover_histogram[5:]))

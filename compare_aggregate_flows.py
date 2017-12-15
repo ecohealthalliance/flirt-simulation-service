@@ -28,7 +28,12 @@ def main():
     date_range_end = datetime.datetime.now()
     date_range_start = date_range_end - datetime.timedelta(14)
 
-    direct_seat_flows = compute_direct_seat_flows(db, date_range_start, date_range_end)
+    direct_seat_flows = compute_direct_seat_flows(db, {
+        "departureDateTime": {
+            "$lte": date_range_end,
+            "$gte": date_range_start
+        }
+    })
 
     calculator_with_schedules = AirportFlowCalculator(db, aggregated_seats=direct_seat_flows)
     calculator_aggregated_flows = AirportFlowCalculator(db,

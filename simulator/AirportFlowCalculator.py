@@ -18,16 +18,11 @@ from collections import defaultdict
 import numpy
 
 
-def compute_direct_seat_flows(db, date_range_start, date_range_end):
+def compute_direct_seat_flows(db, match_query):
     result = defaultdict(dict)
     for pair in db.flights.aggregate([
         {
-            "$match": {
-                "departureDateTime": {
-                    "$lte": date_range_end,
-                    "$gte": date_range_start
-                }
-            }
+            "$match": match_query
         }, {
             '$group': {
                 '_id': {
@@ -148,26 +143,41 @@ class AirportFlowCalculator(object):
             for leg_num, leg_prob in self.LEG_PROBABILITY_DISTRIBUTION.items()}
         self.max_legs = len(self.LEG_PROBABILITY_DISTRIBUTION) - 1
 
-    def check_logical_layovers(self, origin, destination, layover_set):
+    def get_itinerary_distance(self, itinerary):
+        idx_itinerary = [self.airport_to_idx.get(airport) for airport in itinerary]
+        idx_itinerary = filter(lambda x: x, idx_itinerary)
+        total_distance = 0.0
+        for a, b in zip(idx_itinerary, idx_itinerary[1:]):
+            total_distance += self.airport_distance_matrix.item(a, b)
+        return total_distance
+
+    def check_logical_layovers(self, itinerary):
         """
-        Return true if the set of layovers in layover set are all logical if they come between the given origin and
-        destination airports. The criteria used to determine if a layover is logical is essentially
+        Check that the last 3 airports in the itinerary form a logical layover and that every airport in the itinerary
+        is a logical layover between first and final airports.
+        The criteria used to determine if a layover is logical is essentially
         to draw a circle around the start and end airports with a radius equal to the distance between them
         and only allow layovers airports within at least one of the two circles.
         Another way to put it is that if a layover flight leg both takes longer than a direct flight to the destination
         would and puts the passenger at a location further from the destination than they were initially it is illogical.
         """
+        idx_itinerary = [self.airport_to_idx.get(airport) for airport in itinerary]
+        origin = idx_itinerary[0]
+        destination = idx_itinerary[-1]
+        if destination is None:
+            # When the airport location is unknown the layover cannot be checked.
+            return True
         if origin == destination:
             return False
-        a = self.airport_to_idx.get(origin)
-        b = self.airport_to_idx.get(destination)
-        if a is None or b is None:
-            # when the airport location is unknown the layover cannot be checked.
+        layovers = filter(lambda x: x, idx_itinerary[1:-1])
+        # Check last 3 airports in long itineraries.
+        if len(layovers) > 2 and not is_logical(self.airport_distance_matrix, layovers[-2], destination, layovers[-1]):
+            return False
+        if origin is None:
             return True
         result = all([
-            is_logical(self.airport_distance_matrix, a, b, self.airport_to_idx[intermediate])
-            for intermediate in layover_set
-            if intermediate in self.airport_to_idx])
+            is_logical(self.airport_distance_matrix, origin, destination, intermediate)
+            for intermediate in layovers])
         return result
 
     @lrudecorator(30000)
@@ -235,13 +245,11 @@ class AirportFlowCalculator(object):
 
             if len(itin_sofar) - 1 >= self.max_legs:
                 return itin_sofar
-            initial_origin = itin_sofar[0]
-            layover_set = set(itin_sofar[1:])
             if self.use_layover_checking:
                 # only include flights with logical layovers
                 flights = [
                     flight for flight in flights
-                    if self.check_logical_layovers(initial_origin, flight.arrival_airport, layover_set)]
+                    if self.check_logical_layovers(itin_sofar + [flight.arrival_airport])]
             # only include flights that the passenger arrived prior to
             flights = [
                 flight for flight in flights
@@ -334,7 +342,7 @@ class AirportFlowCalculator(object):
                 valid_destinations = {}
                 for destination, seats in self.aggregated_seats[departure_airport].items():
                     # filter out itineraries that have illogical layovers.
-                    if self.check_logical_layovers(initial_origin, destination, layover_set):
+                    if self.check_logical_layovers(itin_sofar + [destination]):
                         if initial_origin == destination:
                             raise Exception("Circular itinerary")
                         valid_destinations[destination] = seats
@@ -394,13 +402,19 @@ class AirportFlowCalculator(object):
                   start_date=datetime.datetime.now(),
                   end_date=datetime.datetime.now()):
         terminal_passengers_by_airport = defaultdict(int)
+        trip_distances_by_airport = defaultdict(float)
+        trip_legs_by_airport = defaultdict(int)
         for itinerary in self.calculate_itins(starting_airport, simulated_passengers, start_date, end_date):
             terminal_airport = itinerary[-1]
             terminal_passengers_by_airport[terminal_airport] += 1
+            trip_distances_by_airport[terminal_airport] += self.get_itinerary_distance(itinerary)
+            trip_legs_by_airport[terminal_airport] += len(itinerary)
         return {
             airport: dict(
                 _id=airport,
-                terminal_flow=float(passengers) / simulated_passengers)
+                terminal_flow=float(passengers) / simulated_passengers,
+                average_legs=float(trip_legs_by_airport[airport]) / simulated_passengers,
+                average_distance=float(trip_distances_by_airport[airport]) / simulated_passengers)
             for airport, passengers in terminal_passengers_by_airport.items()
         }
 
