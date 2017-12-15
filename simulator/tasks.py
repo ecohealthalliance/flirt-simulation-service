@@ -25,9 +25,6 @@ celery_tasks.conf.update(
     }
 )
 
-all_time_direct_seat_flows = compute_direct_seat_flows(
-    pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {})
-
 direct_seat_flows = None
 prior_start_date = None
 db = None
@@ -54,6 +51,7 @@ def maybe_initialize_variables():
     """
     global my_airport_flow_calculator
     global db
+    all_time_direct_seat_flows = compute_direct_seat_flows(db, {})
     if my_airport_flow_calculator is None:
         db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
         my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
