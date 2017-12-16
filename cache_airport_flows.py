@@ -21,7 +21,7 @@ db = pymongo.MongoClient(mongo_url)[mongo_db_name]
 def main():
     start_date = datetime.datetime.now()
     res = celery.group(*[
-        tasks.calculate_flows_for_airport_14_days.s(i['_id'], start_date)
+        tasks.calculate_flows_for_airport_14_days.s(i['_id'], start_date.strftime('%Y-%m-%d'))
         for i in db.airports.find()
     ]).set(queue='caching')()
     print res.get(timeout=None, interval=0.5)

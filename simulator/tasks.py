@@ -61,7 +61,7 @@ def maybe_initialize_variables():
 def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
     SIMULATED_PASSENGERS = 10000
     period_days = 14
-    start_date = datetime.datetime.strptime(start_date.split('T')[0], '%Y-%m-%d')
+    start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     end_date = start_date + datetime.timedelta(period_days)
     maybe_update_direct_seat_flows(start_date, end_date)
     maybe_initialize_variables()
