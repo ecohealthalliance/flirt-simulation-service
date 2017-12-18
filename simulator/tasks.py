@@ -29,10 +29,12 @@ direct_seat_flows = None
 prior_start_date = None
 db = None
 my_airport_flow_calculator = None
-current_mode = None
 
 
 def maybe_update_direct_seat_flows(start_date, end_date):
+    """
+    Update the aggregated direct seat flows for the given time interval.
+    """
     global direct_seat_flows
     global prior_start_date
     if direct_seat_flows is None or prior_start_date != start_date:
@@ -51,14 +53,18 @@ def maybe_initialize_variables():
     """
     global my_airport_flow_calculator
     global db
-    all_time_direct_seat_flows = compute_direct_seat_flows(db, {})
-    if my_airport_flow_calculator is None:
+    if db is None:
         db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
+        all_time_direct_seat_flows = compute_direct_seat_flows(db, {})
         my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
     return my_airport_flow_calculator, db
 
 @celery_tasks.task(name='tasks.calculate_flows_for_airport_14_days')
 def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
+    """
+    Calculate the numbers of passengers that flow from the given origin to every other airport
+    over the interval starting at start_date and store them in the passengerFlows collection.
+    """
     SIMULATED_PASSENGERS = 10000
     period_days = 14
     start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
