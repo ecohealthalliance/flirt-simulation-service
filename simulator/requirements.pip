@@ -1,4 +1,4 @@
-pymongo==3.4.0
+pymongo==3.6.0
 python-dateutil==2.4.2
 geopy==1.11.0
 pylru==1.0.9
