@@ -7,6 +7,7 @@ from dateutil import parser as dateparser
 import config
 import smtplib
 from email.mime.text import MIMEText
+from pylru import lrudecorator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,55 +26,46 @@ celery_tasks.conf.update(
     }
 )
 
-direct_seat_flows = None
-prior_start_date = None
-db = None
-my_airport_flow_calculator = None
+@lrudecorator(3)
+def get_direct_seat_flows(start_date, end_date):
+    return compute_direct_seat_flows(
+        pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {
+            "departureDateTime": {
+                "$lte": end_date,
+                "$gte": start_date
+            }
+        })
 
+@lrudecorator(1)
+def get_database():
+    return pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
 
-def maybe_update_direct_seat_flows(start_date, end_date):
-    """
-    Update the aggregated direct seat flows for the given time interval.
-    """
-    global direct_seat_flows
-    global prior_start_date
-    if direct_seat_flows is None or prior_start_date != start_date:
-        prior_start_date = start_date
-        direct_seat_flows = compute_direct_seat_flows(
-            pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {
-                "departureDateTime": {
-                    "$lte": end_date,
-                    "$gte": start_date
-                }
-            })
-
-def maybe_initialize_variables():
+@lrudecorator(1)
+def get_airport_flow_calculator():
     """
     Initialize global variables that can be reused between tasks and if required.
     """
-    global my_airport_flow_calculator
-    global db
-    if db is None:
-        db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
-        all_time_direct_seat_flows = compute_direct_seat_flows(db, {})
-        my_airport_flow_calculator = AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
-    return my_airport_flow_calculator, db
+    db = get_database()
+    all_time_direct_seat_flows = compute_direct_seat_flows(db, {})
+    return AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
 
-@celery_tasks.task(name='tasks.calculate_flows_for_airport_14_days')
-def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
+@celery_tasks.task(name='tasks.calculate_flows_for_airport')
+def calculate_flows_for_airport(origin_airport_id, start_date, end_date, sim_group):
     """
     Calculate the numbers of passengers that flow from the given origin to every other airport
     over the interval starting at start_date and store them in the passengerFlows collection.
     """
     SIMULATED_PASSENGERS = 10000
-    period_days = 14
     start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-    end_date = start_date + datetime.timedelta(period_days)
-    maybe_update_direct_seat_flows(start_date, end_date)
-    maybe_initialize_variables()
+    end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d')
+    period_days = (end_date - start_date).days
+    direct_seat_flows = get_direct_seat_flows(start_date, end_date)
+    db = get_database()
+    my_airport_flow_calculator = get_airport_flow_calculator()
     # Drop all results for origin airport
     db.passengerFlows.delete_many({
-        'departureAirport': origin_airport_id
+        'departureAirport': origin_airport_id,
+        'simGroup': sim_group
     })
     results = my_airport_flow_calculator.calculate(
         origin_airport_id,
@@ -91,7 +83,8 @@ def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
             'recordDate': datetime.datetime.now(),
             'startDateTime': start_date,
             'endDateTime': end_date,
-            'periodDays': period_days
+            'periodDays': period_days,
+            'simGroup': sim_group
         } for k, v in results.items())
         return len(results)
     else:
@@ -100,7 +93,8 @@ def calculate_flows_for_airport_14_days(origin_airport_id, start_date):
 
 @celery_tasks.task(name='tasks.simulate_passengers')
 def simulate_passengers(simulation_id, origin_airport_id, number_of_passengers, start_date, end_date):
-    maybe_initialize_variables()
+    db = get_database()
+    my_airport_flow_calculator = get_airport_flow_calculator()
     # datetime objects cannot be passed to tasks, so they are passed in as strings.
     start_date = dateparser.parse(start_date)
     end_date = dateparser.parse(end_date)
