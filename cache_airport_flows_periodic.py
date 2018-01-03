@@ -3,6 +3,7 @@ import pymongo
 import datetime
 from simulator import tasks
 import celery
+import pandas as pd
 
 __VERSION__ = '0.0.1'
 
@@ -18,24 +19,33 @@ else:
 
 db = pymongo.MongoClient(mongo_url)[mongo_db_name]
 
+
 def main():
-    months = [
-        (8, 2017),
-        (9, 2017),
-        (10, 2017),
-        (11, 2017),
-        (12, 2017),
-        (1, 2018),
-    ]
-    for (start_month, start_year), (end_month, end_year) in zip(months, months[1:]):
-        start_date = datetime.datetime(start_year, start_month, 1)
-        end_date = datetime.datetime(end_year, end_month, 1)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--sim_group", default='fmd-%Y-%m'
+    )
+    parser.add_argument(
+        "--start_date", default='2017-08-01'
+    )
+    parser.add_argument(
+        "--periods", default='5'
+    )
+    parser.add_argument(
+        "--freq", default='M'
+    )
+    args = parser.parse_args()
+    months = list(pd.date_range(args.start_date, periods=int(args.periods) + 1, freq=args.freq))
+    for start_month, end_month in zip(months, months[1:]):
+        start_date = datetime.datetime(start_month.year, start_month.month, 1)
+        end_date = datetime.datetime(end_month.year, end_month.month, 1)
         res = celery.group(*[
             tasks.calculate_flows_for_airport.s(
                 i['_id'],
                 start_date.strftime('%Y-%m-%d'),
                 end_date.strftime('%Y-%m-%d'),
-                'fmd' + start_date.strftime('-%Y-%m')).set(queue='caching')
+                start_date.strftime(args.sim_group)).set(queue='caching')
             for i in db.airports.find()
         ])()
         # Wait for all sims for the month to complete.
@@ -43,4 +53,6 @@ def main():
         # for a limited number of months.
         res.get(timeout=None, interval=0.5)
 
-main()
+
+if __name__ == '__main__':
+    main()
