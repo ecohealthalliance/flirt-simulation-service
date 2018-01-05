@@ -38,7 +38,9 @@ def get_direct_seat_flows(start_date, end_date):
 
 @lrudecorator(1)
 def get_database():
-    return pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
+    db = pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name]
+    db.passengerFlows.ensure_index('simGroup')
+    return db
 
 @lrudecorator(1)
 def get_airport_flow_calculator():
@@ -80,6 +82,7 @@ def calculate_flows_for_airport(origin_airport_id, start_date, end_date, sim_gro
             'departureAirport': origin_airport_id,
             'arrivalAirport': k,
             'estimatedPassengers': v['terminal_flow'] * total_passengers,
+            'averageDistance': v['average_distance'],
             'recordDate': datetime.datetime.now(),
             'startDateTime': start_date,
             'endDateTime': end_date,

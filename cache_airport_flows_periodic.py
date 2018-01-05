@@ -51,7 +51,7 @@ def main():
         # Wait for all sims for the month to complete.
         # Simulating too many months at once can be slow because aggregated direct flights is only cached
         # for a limited number of months.
-        res.get(timeout=None, interval=0.5)
+        res.get(timeout=None, interval=2.0)
 
 
 if __name__ == '__main__':

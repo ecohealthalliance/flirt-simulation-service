@@ -15,7 +15,7 @@ from bson import json_util
 from cerberus import Validator
 from datetime import datetime
 from simulator import tasks
-from celery import chord
+import celery
 
 __VERSION__ = '0.0.3'
 
@@ -351,8 +351,8 @@ class SimulationHandler(BaseHandler):
                 node_passengers = int(round(float(num_passengers * outgoing_seat_counts.get(node, 0)) / total_seat_count))
                 arg_list.append({'origin_airport_id': node, 'number_of_passengers': node_passengers})
             #take all of the args from art_list and use them to create a chord of tasks for calls to simulate_passengers
-            res = chord(
-                tasks.simulate_passengers.s(sim_id,i['origin_airport_id'],i['number_of_passengers'],start,end) 
+            res = celery.chord(
+                tasks.simulate_passengers.s(sim_id,i['origin_airport_id'],i['number_of_passengers'],start,end)
                 for i in arg_list
                 )(tasks.callback.s(email, sim_id))
             task_ids = [task.id for task in res.parent.results]
@@ -432,6 +432,27 @@ class Application(tornado.web.Application):
             while (yield cursor.fetch_next):
                 doc = cursor.next_object()
                 self.nodes.append(doc['_id'])
+        # Run a couple sims on start up to warm up the simulator
+        start_date = datetime.datetime.now()
+        end_date = start_date + datetime.timedelta(7)
+        warmup_result = celery.group(
+            tasks.simulate_passengers.s(
+                'warmup',
+                'LAX',
+                200,
+                start_date.strftime('%Y-%m-%d'),
+                end_date.strftime('%Y-%m-%d')
+            ),
+            tasks.simulate_passengers.s(
+                'warmup',
+                'ATL',
+                200,
+                start_date.strftime('%Y-%m-%d'),
+                end_date.strftime('%Y-%m-%d')
+            )
+        )()
+        # Wait for warmup sims to finish.
+        warmup_result.get(timeout=None, interval=2.0)
         tornado.ioloop.IOLoop.current().run_sync(get_nodes)
         logging.info('Ready to simulate [%s] nodes', len(self.nodes))
         super(Application, self).__init__(handlers, **settings)
