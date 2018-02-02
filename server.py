@@ -13,7 +13,7 @@ from tornado.options import define, options
 from tornado import gen
 from bson import json_util
 from cerberus import Validator
-from datetime import datetime
+import datetime
 from simulator import tasks
 import celery
 
@@ -134,13 +134,13 @@ class SimulationRecord():
             if data_type == 'datetime':
                 datetime_format = '%d/%m/%Y'
                 if SimulationRecord.could_be_datetime(raw_value, datetime_format):
-                    self.fields[param] = datetime.strptime(raw_value, datetime_format)
+                    self.fields[param] = datetime.datetime.strptime(raw_value, datetime_format)
                 else:
                     self.fields[param] = None
                 continue
 
         # default values
-        self.fields['submittedTime'] = datetime.utcnow()
+        self.fields['submittedTime'] = datetime.datetime.utcnow()
         self.fields['simId'] = self.gen_key()
 
     def validation_errors(self):
@@ -213,8 +213,8 @@ class SimulationRecord():
                 return False
 
             try:
-                d = datetime.strptime(val, fmt)
-                if not isinstance(d, datetime):
+                d = datetime.datetime.strptime(val, fmt)
+                if not isinstance(d, datetime.datetime):
                     raise ValueError
                 else:
                     return True
