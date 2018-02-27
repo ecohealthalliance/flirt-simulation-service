@@ -5,6 +5,11 @@ if 'MONGO_URI' in os.environ:
 else:
         mongo_uri = "mongodb://localhost:27017"
 
+if 'BROKER_URL' in os.environ:
+        broker_url = os.environ['BROKER_URL']
+else:
+        broker_url = mongo_uri + '/tasks'
+
 if 'MONGO_DB' in os.environ:
         mongo_db_name = os.environ['MONGO_DB']
 else:

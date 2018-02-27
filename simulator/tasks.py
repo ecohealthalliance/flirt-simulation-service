@@ -2,7 +2,7 @@ import celery
 import logging
 import pymongo
 import datetime
-from AirportFlowCalculator import AirportFlowCalculator, compute_direct_seat_flows
+from AirportFlowCalculator import AirportFlowCalculator, compute_direct_passenger_flows
 from dateutil import parser as dateparser
 import config
 import smtplib
@@ -12,14 +12,12 @@ from pylru import lrudecorator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BROKER_URL = config.mongo_uri + '/tasks'
-
-celery_tasks = celery.Celery('tasks', broker=BROKER_URL)
+celery_tasks = celery.Celery('tasks', broker=config.broker_url)
 celery_tasks.conf.update(
     CELERY_TASK_SERIALIZER='json',
     CELERY_ACCEPT_CONTENT=['json'],  # Ignore other content
     CELERY_RESULT_SERIALIZER='json',
-    CELERY_RESULT_BACKEND = BROKER_URL,
+    CELERY_RESULT_BACKEND = config.broker_url,
     CELERY_MONGODB_BACKEND_SETTINGS = {
         'database': 'tasks',
         'taskmeta_collection': 'taskmeta',
@@ -27,8 +25,8 @@ celery_tasks.conf.update(
 )
 
 @lrudecorator(3)
-def get_direct_seat_flows(start_date, end_date):
-    return compute_direct_seat_flows(
+def get_direct_passenger_flows(start_date, end_date):
+    return compute_direct_passenger_flows(
         pymongo.MongoClient(config.mongo_uri)[config.mongo_db_name], {
             "departureDateTime": {
                 "$lte": end_date,
@@ -48,8 +46,8 @@ def get_airport_flow_calculator():
     Initialize global variables that can be reused between tasks and if required.
     """
     db = get_database()
-    all_time_direct_seat_flows = compute_direct_seat_flows(db, {})
-    return AirportFlowCalculator(db, aggregated_seats=all_time_direct_seat_flows)
+    all_time_direct_passenger_flows = compute_direct_passenger_flows(db, {})
+    return AirportFlowCalculator(db, aggregated_seats=all_time_direct_passenger_flows)
 
 @celery_tasks.task(name='tasks.calculate_flows_for_airport')
 def calculate_flows_for_airport(origin_airport_id, start_date, end_date, sim_group):
@@ -61,7 +59,7 @@ def calculate_flows_for_airport(origin_airport_id, start_date, end_date, sim_gro
     start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d')
     period_days = (end_date - start_date).days
-    direct_seat_flows = get_direct_seat_flows(start_date, end_date)
+    direct_passenger_flows = get_direct_passenger_flows(start_date, end_date)
     db = get_database()
     my_airport_flow_calculator = get_airport_flow_calculator()
     # Drop all results for origin airport
@@ -76,8 +74,8 @@ def calculate_flows_for_airport(origin_airport_id, start_date, end_date, sim_gro
         end_date=end_date)
     if len(results) > 0:
         seats_per_pasenger = sum(legs * value for legs, value in AirportFlowCalculator.LEG_PROBABILITY_DISTRIBUTION.items())
-        total_seats = sum(direct_seat_flows[origin_airport_id].values())
-        total_passengers = int(float(total_seats) / seats_per_pasenger)
+        total_direct_passengers = sum(direct_passenger_flows[origin_airport_id].values())
+        total_passengers = int(float(total_direct_passengers) / seats_per_pasenger)
         db.passengerFlows.insert_many({
             'departureAirport': origin_airport_id,
             'arrivalAirport': k,
