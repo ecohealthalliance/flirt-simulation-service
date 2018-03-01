@@ -205,7 +205,7 @@ class SimulationRecord():
         if val == None or fmt == None:
             return False
 
-        if isinstance(val, datetime):
+        if isinstance(val, datetime.datetime):
             return True
 
         if isinstance(val, (str, unicode)):
