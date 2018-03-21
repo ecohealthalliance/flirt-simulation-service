@@ -18,11 +18,17 @@ from collections import defaultdict
 import numpy
 
 
+# Paramters derived from fit_flight_parameters.py
+A_load_ratio = 0.001109
+b_load_ratio = 0.605214
+A_departure_ratio = 0.000452
+b_departure_ratio = 0.684811
+
 def compute_direct_seat_flows(db, match_query):
     result = defaultdict(dict)
     for pair in db.flights.aggregate([
         {
-            "$match": match_query
+            '$match': match_query
         }, {
             '$group': {
                 '_id': {
@@ -39,6 +45,49 @@ def compute_direct_seat_flows(db, match_query):
             result[origin][destination] = pair['totalSeats']
     return result
 
+
+def compute_direct_passenger_flows(db, match_query):
+    result = defaultdict(dict)
+    for pair in db.flights.aggregate([
+        {
+            '$match': match_query
+        }, {
+            '$group': {
+                '_id': {
+                    '$concat': ['$departureAirport', '-', '$arrivalAirport']
+                },
+                'totalPassengers': {
+                    '$sum': {
+                        '$multiply': [
+                            {
+                                '$sum': [
+                                    {
+                                        '$multiply' : [
+                                            A_load_ratio,
+                                            '$totalSeats'
+                                        ]
+                                    }, b_load_ratio
+                                ]
+                            }, {
+                                '$sum': [
+                                    {
+                                        '$multiply' : [
+                                            A_departure_ratio,
+                                            '$totalSeats'
+                                        ]
+                                    }, b_departure_ratio
+                                ]
+                            }, '$totalSeats'
+                        ]
+                    }
+                }
+            }
+        }
+    ]):
+        if pair['totalPassengers'] > 0:
+            origin, destination = pair['_id'].split('-')
+            result[origin][destination] = pair['totalPassengers']
+    return result
 
 def compute_airport_distances(airport_to_coords_items):
     """
@@ -71,12 +120,16 @@ def is_logical(airport_distance_matrix, airport_a, airport_b, intermediate_airpo
 # allowing more of them to be cached.
 class LightweightFlight(object):
     __slots__ = [
+        'passengers',
         'total_seats',
         'departure_datetime',
         'arrival_datetime',
         'arrival_airport']
 
     def __init__(self, flight_dict):
+        load_ratio = A_load_ratio * flight_dict['totalSeats'] + b_load_ratio
+        departure_ratio = A_departure_ratio * flight_dict['totalSeats'] + b_departure_ratio
+        self.passengers = departure_ratio * load_ratio * flight_dict['totalSeats']
         self.total_seats = flight_dict['totalSeats']
         self.departure_datetime = flight_dict['departureDateTime']
         self.arrival_datetime = flight_dict['arrivalDateTime']
@@ -111,12 +164,11 @@ class AirportFlowCalculator(object):
             [('departureAirport', pymongo.ASCENDING), ('departureDateTime', pymongo.ASCENDING)])
         self.use_layover_checking = use_layover_checking
         if self.use_layover_checking:
-            # Pre-compute geographically reasonable itineraries
-            active_airports = set()
-            for origin, destinations in aggregated_seats.items():
-                active_airports.add(origin)
-                active_airports.update(destinations)
             if aggregated_seats:
+                active_airports = set()
+                for origin, destinations in aggregated_seats.items():
+                    active_airports.add(origin)
+                    active_airports.update(destinations)
                 airport_to_coords = {}
                 for airport in self.db.airports.find():
                     if airport['_id'] in active_airports:
@@ -255,17 +307,12 @@ class AirportFlowCalculator(object):
                 flight for flight in flights
                 if departure_airport_arrival_time < flight.departure_datetime]
             # Weight flights from the origin city (A1) based on the summed
-            # weekly flow between A and all other destinations (B1).
-            # Specifically, sum the number of seats on each flight between
-            # airport A and each B airport over the course of a week,
-            # and divide this by the total number of seats leaving A over that week.
-            # A small value is added to avoid division by zero errors when
-            # there are no outbound flights.
+            # direct flow between A and all other destinations (B1).
             # However, these situations might cause some error since
             # there is nowhere for the passengers we expect to transfer
             # to go.
-            cumulative_outbound_seats = sum([
-                flight.total_seats for flight in flights])
+            cumulative_outbound_passengers = sum([
+                flight.passengers for flight in flights])
             # Assumption: People are likely to take flights that occur shortly
             # after they arrived at an airport. This may differ for, say,
             # flights crossing an administrative boundary, but at first pass,
@@ -283,8 +330,8 @@ class AirportFlowCalculator(object):
                         float((flight.departure_datetime -
                                departure_airport_arrival_time).total_seconds()) / 3600)
                     for flight in flights]
-                time_weighted_cumulative_outbound_seats = sum([
-                    flight.total_seats * prob
+                time_weighted_cumulative_outbound_passengers = sum([
+                    flight.passengers * prob
                     for flight, prob in zip(flights, layover_probs)])
                 # Filter out flights with a zero probability
                 filtered_flights = []
@@ -308,12 +355,12 @@ class AirportFlowCalculator(object):
                 # inflow from other flights which will be combined later.
                 if self.weight_by_departure_time:
                     inflow = (
-                        float(flight.total_seats) * layover_probs[idx] /
-                        time_weighted_cumulative_outbound_seats)
+                        float(flight.passengers) * layover_probs[idx] /
+                        time_weighted_cumulative_outbound_passengers)
                 else:
                     inflow = (
-                        float(flight.total_seats) /
-                        cumulative_outbound_seats)
+                        float(flight.passengers) /
+                        cumulative_outbound_passengers)
                 terminal_flow = inflow * self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar)] / (1.0 - inflow_sofar)
                 outflow = inflow * (1.0 - self.TERMINAL_LEG_PROBABILITIES[len(itin_sofar)]) / (1.0 - inflow_sofar)
                 random_number = random.random()
@@ -408,14 +455,14 @@ class AirportFlowCalculator(object):
             terminal_airport = itinerary[-1]
             terminal_passengers_by_airport[terminal_airport] += 1
             trip_distances_by_airport[terminal_airport] += self.get_itinerary_distance(itinerary)
-            trip_legs_by_airport[terminal_airport] += len(itinerary)
+            trip_legs_by_airport[terminal_airport] += len(itinerary) - 1
         return {
             airport: dict(
                 _id=airport,
-                terminal_flow=float(passengers) / simulated_passengers,
-                average_legs=float(trip_legs_by_airport[airport]) / simulated_passengers,
-                average_distance=float(trip_distances_by_airport[airport]) / simulated_passengers)
-            for airport, passengers in terminal_passengers_by_airport.items()
+                terminal_flow=float(passengers_for_airport) / simulated_passengers,
+                average_legs=float(trip_legs_by_airport[airport]) / passengers_for_airport,
+                average_distance=float(trip_distances_by_airport[airport]) / passengers_for_airport)
+            for airport, passengers_for_airport in terminal_passengers_by_airport.items()
         }
 
 
@@ -427,18 +474,11 @@ if __name__ == '__main__':
         "--mongo_url", default='localhost'
     )
     parser.add_argument(
-        "--db_name", default='grits-net-meteor'
+        "--db_name", default='flirt'
     )
     parser.add_argument(
         "--starting_airport", default='BNA',
         help="The airport code of the initial airport."
-    )
-    parser.add_argument(
-        "--store_itins_with_id", default=None,
-        help="""If set, a simulated_itineraries collection will be created in
-        the given database from the simulated passengers,
-        and the documents added by the simulation will all
-        have the given id as their simulationId."""
     )
     parser.add_argument(
         "--start_date", default=None,
@@ -464,17 +504,25 @@ if __name__ == '__main__':
     start_date = datetime.datetime.now()
     if args.start_date:
         start_date = dateparser.parse(args.start_date)
-    end_date = start_date
+    end_date = start_date + datetime.timedelta(days=14)
     if args.end_date:
         end_date = dateparser.parse(args.end_date)
+    print start_date, end_date
+    aggregated_seats = compute_direct_passenger_flows(
+        pymongo.MongoClient(args.mongo_url)[args.db_name], {
+            "departureDateTime": {
+                "$lte": end_date,
+                "$gte": start_date
+            }
+        })
     cumulative_probability = 0.0
     calculator = AirportFlowCalculator(
-        pymongo.MongoClient(args.mongo_url)[args.db_name]
+        pymongo.MongoClient(args.mongo_url)[args.db_name],
+        aggregated_seats=aggregated_seats
     )
     for airport_id, airport in calculator.calculate(
             args.starting_airport,
             simulated_passengers=int(args.simulated_passengers),
-            store_itins_with_id=args.store_itins_with_id,
             start_date=start_date,
             end_date=end_date
     ).items():

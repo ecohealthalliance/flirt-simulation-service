@@ -36,10 +36,10 @@ def main():
         "--freq", default='M'
     )
     args = parser.parse_args()
-    months = list(pd.date_range(args.start_date, periods=int(args.periods) + 1, freq=args.freq))
-    for start_month, end_month in zip(months, months[1:]):
-        start_date = datetime.datetime(start_month.year, start_month.month, 1)
-        end_date = datetime.datetime(end_month.year, end_month.month, 1)
+    periods = list(pd.date_range(args.start_date, periods=int(args.periods) + 1, freq=args.freq))
+    for current_period, next_period in zip(periods, periods[1:]):
+        start_date = current_period.to_period().start_time
+        end_date = next_period.to_period().start_time
         res = celery.group(*[
             tasks.calculate_flows_for_airport.s(
                 i['_id'],
@@ -48,7 +48,7 @@ def main():
                 start_date.strftime(args.sim_group)).set(queue='caching')
             for i in db.airports.find()
         ])()
-        # Wait for all sims for the month to complete.
+        print "Waiting for sims to complete for:", str(start_date)
         # Simulating too many months at once can be slow because aggregated direct flights is only cached
         # for a limited number of months.
         res.get(timeout=None, interval=2.0)
