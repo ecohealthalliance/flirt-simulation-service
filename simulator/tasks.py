@@ -49,7 +49,7 @@ def get_airport_flow_calculator():
     all_time_direct_passenger_flows = compute_direct_passenger_flows(db, {})
     return AirportFlowCalculator(db, aggregated_seats=all_time_direct_passenger_flows)
 
-@celery_tasks.task(name='tasks.calculate_flows_for_airport')
+@celery_tasks.task(name='tasks.calculate_flows_for_airport', acks_late=True)
 def calculate_flows_for_airport(origin_airport_id, start_date, end_date, sim_group):
     """
     Calculate the numbers of passengers that flow from the given origin to every other airport

@@ -17,12 +17,9 @@ from pylru import lrudecorator
 from collections import defaultdict
 import numpy
 
-
 # Paramters derived from fit_flight_parameters.py
-A_load_ratio = 0.001109
-b_load_ratio = 0.605214
-A_departure_ratio = 0.000452
-b_departure_ratio = 0.684811
+A_load_ratio = 0.000861
+b_load_ratio = 0.674728
 
 def compute_direct_seat_flows(db, match_query):
     result = defaultdict(dict)
@@ -46,7 +43,9 @@ def compute_direct_seat_flows(db, match_query):
     return result
 
 
-def compute_direct_passenger_flows(db, match_query):
+def compute_direct_passenger_flows(
+    db, match_query,
+    A_load_ratio_p=A_load_ratio, b_load_ratio_p=b_load_ratio):
     result = defaultdict(dict)
     for pair in db.flights.aggregate([
         {
@@ -63,19 +62,10 @@ def compute_direct_passenger_flows(db, match_query):
                                 '$sum': [
                                     {
                                         '$multiply' : [
-                                            A_load_ratio,
+                                            A_load_ratio_p,
                                             '$totalSeats'
                                         ]
-                                    }, b_load_ratio
-                                ]
-                            }, {
-                                '$sum': [
-                                    {
-                                        '$multiply' : [
-                                            A_departure_ratio,
-                                            '$totalSeats'
-                                        ]
-                                    }, b_departure_ratio
+                                    }, b_load_ratio_p
                                 ]
                             }, '$totalSeats'
                         ]
