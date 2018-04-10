@@ -118,8 +118,7 @@ class LightweightFlight(object):
 
     def __init__(self, flight_dict):
         load_ratio = A_load_ratio * flight_dict['totalSeats'] + b_load_ratio
-        departure_ratio = A_departure_ratio * flight_dict['totalSeats'] + b_departure_ratio
-        self.passengers = departure_ratio * load_ratio * flight_dict['totalSeats']
+        self.passengers = load_ratio * flight_dict['totalSeats']
         self.total_seats = flight_dict['totalSeats']
         self.departure_datetime = flight_dict['departureDateTime']
         self.arrival_datetime = flight_dict['arrivalDateTime']
